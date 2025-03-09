@@ -1,0 +1,59 @@
+{
+  "name": "docindex",
+  "version": "0.2.0",
+  "description": "A tool for indexing, storing, retrieving, and reusing documentation from different service websites",
+  "main": "src/index.js",
+  "bin": {
+    "docindex": "src/cli.js",
+    "docindex-enhanced": "src/enhanced-cli.js",
+    "docindex-server": "src/server.js",
+    "docindex-simple-server": "src/simple-server.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js",
+    "start:enhanced": "node src/enhanced-cli.js",
+    "start:server": "node src/server.js",
+    "start:simple-server": "node src/simple-server.js",
+    "update-mcp": "node update-mcp-settings.js",
+    "update-specific-mcp": "node update-specific-mcp.js",
+    "setup-and-start": "node update-specific-mcp.js && node src/server.js",
+    "setup-and-start:simple": "node update-specific-mcp.js && node src/simple-server.js",
+    "install-deps": "node install-dependencies.js",
+    "full-setup": "node install-dependencies.js && node update-specific-mcp.js && node src/server.js",
+    "full-setup:simple": "node update-specific-mcp.js && node src/simple-server.js",
+    "example:ai-agent": "node examples/ai-agent-example.js",
+    "test": "jest",
+    "test:enhanced": "jest tests/enhanced-test.js",
+    "example:basic": "node examples/basic-usage.js",
+    "example:library": "node examples/library-usage.js",
+    "example:maps": "node examples/google-maps-example.js",
+    "test:maps": "node test-google-maps.js",
+    "switch:enhanced": "node switch-to-enhanced.js",
+    "switch:regular": "node switch-to-regular.js"
+  },
+  "keywords": [
+    "documentation",
+    "indexing",
+    "search",
+    "cli",
+    "api"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "commander": "^11.0.0",
+    "cors": "^2.8.5",
+    "crypto": "^1.0.1",
+    "express": "^4.18.2",
+    "inquirer": "^8.2.5",
+    "chalk": "^4.1.2",
+    "lowdb": "^5.1.0",
+    "node-html-parser": "^6.1.5",
+    "ora": "^5.4.1"
+  },
+  "devDependencies": {
+    "jest": "^29.5.0"
+  }
+}
