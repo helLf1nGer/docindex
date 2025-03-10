@@ -1,86 +1,122 @@
-# DocSI MCP - Documentation Search Index for AI Agents
+# DocSI - Documentation Search and Indexing for AI Agents
 
-DocSI is a documentation indexing, searching, and integration tool designed specifically for AI agents using the Model Context Protocol (MCP). Unlike human-focused documentation browsers, DocSI optimizes documentation for machine consumption.
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/docsi/docsi)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-## Key Features
+DocSI is a state-of-the-art documentation mechanism designed for AI-assisted software development. It crawls, indexes, and provides semantic search capabilities for technical documentation, optimized for AI agent consumption.
 
-- **Documentation Indexing**: Crawl and index documentation from websites with configurable depth and limits
-- **Semantic Search**: Find documentation using natural language queries and semantic understanding
-- **API Component Extraction**: Automatically identify and extract API components (functions, classes, methods)
-- **Relationship Mapping**: Discover connections between related documentation components
-- **MCP Integration**: Seamless integration with Roo Cline and other MCP-compatible AI assistants
-- **Cross-Platform**: Works on Windows, macOS, and Linux
+## Features
 
-## Security & Privacy Features
+- **Crawl & Index Documentation** - Automatically discover and index documentation from various sources
+- **Semantic Search** - Find documentation based on meaning, not just keywords
+- **API Component Extraction** - Identify and extract API definitions for structured access
+- **MCP Integration** - Seamless integration with the Model Context Protocol
+- **Relationship Mapping** - Understand connections between documentation entities
+- **Security-First Design** - Built with security best practices from the ground up
 
-- **Path Sanitization**: Prevents path traversal attacks with robust validation
-- **Environment-Based Configuration**: Uses environment variables instead of hardcoded paths
-- **Dynamic Path Detection**: Adapts to different OS platforms automatically
-- **Input Validation**: Sanitizes all inputs to prevent injection attacks
+## Getting Started
 
-## Quick Start
+### Prerequisites
+
+- Node.js 14.0.0 or higher
+- npm 6.0.0 or higher
 
 ### Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/docsi.git
+git clone https://github.com/docsi/docsi.git
 cd docsi
 
 # Install dependencies
 npm install
+
+# Build TypeScript
+npm run build
+
+# Set up MCP integration
+npm run setup-mcp
 ```
 
-### Indexing Documentation
+### Usage
 
-```bash
-# Index MDN JavaScript documentation
-npm run start:enhanced add --url https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide --name "MDN JavaScript" --depth 2 --pages 100
-```
+After installation, restart your MCP-enabled application (VSCode with Cline or Claude Desktop). The following tools will be available:
 
-### Running the MCP Server
+- `docsi-discover` - Add and manage documentation sources
+- `docsi-search` - Search for documentation
+- `docsi-analyze` - Analyze documentation and extract relationships
+- `docsi-admin` - Configure and manage DocSI
 
-```bash
-# Update MCP settings and start the server
-npm run setup-and-start
-```
-
-### Using with Roo Cline
-
-Once the server is running, you can use DocSI in Roo Cline:
+### Adding Documentation Sources
 
 ```
-DocIndex > search?q=javascript promises
+docsi-discover add --url https://docs.example.com --name "Example Docs"
 ```
 
-## Environment Variables
+### Searching Documentation
 
-Customize paths and behavior with environment variables:
-
-```bash
-# Base directory for all DocIndex data
-export DOCSI_BASE_DIR=~/custom-docindex
-
-# Specific directories (optional)
-export DOCSI_DATA_DIR=~/custom-docindex/data
-export DOCSI_CACHE_DIR=~/custom-docindex/cache
-export DOCSI_MODEL_DIR=~/custom-docindex/models
+```
+docsi-search "How to implement authentication"
 ```
 
 ## Architecture
 
-DocSI implements an AI-centric documentation architecture focusing on:
+DocSI follows a Domain-Driven Design architecture with clear separation of concerns:
 
-1. **Semantic Parsing**: Documentation is parsed into semantically meaningful components
-2. **Relationship Mapping**: Explicit mapping of relationships between components
-3. **Contextual Embeddings**: Embeddings that capture hierarchical context
-4. **API Specification Extraction**: Formal API specifications for AI consumption
-5. **Usage Pattern Mining**: Extraction of common usage patterns
+```
+docindex/
+├── services/              # Service modules (bounded contexts)
+│   ├── crawler/           # Documentation discovery and crawling
+│   ├── document-processor/# Documentation processing service
+│   ├── semantic-analyzer/ # Semantic analysis service
+│   ├── query-engine/      # Search and querying service
+├── shared/                # Shared modules
+│   ├── domain/            # Core domain models and interfaces
+│   ├── infrastructure/    # Shared infrastructure 
+├── interfaces/            # External interfaces
+│   ├── mcp/               # MCP server interface
+```
+
+## Security
+
+DocSI is designed with security as a primary concern:
+
+- Protects against path traversal attacks
+- Implements proper input validation
+- Sanitizes external content
+- Respects robots.txt
+- Uses proper file system abstractions
+
+## Development
+
+### Project Structure
+
+- `shared/domain/models/` - Core domain entities
+- `shared/domain/repositories/` - Repository interfaces
+- `services/` - Bounded contexts for different services
+- `interfaces/` - External interfaces (MCP, CLI)
+
+### Building
+
+```bash
+npm run build
+```
+
+### Running Tests
+
+```bash
+npm test
+```
 
 ## Contributing
 
-Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+We welcome contributions to DocSI! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## License
 
-MIT License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+- The Model Context Protocol team for their excellent work on MCP
+- The open source community for their contributions to the dependencies used

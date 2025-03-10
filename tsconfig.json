@@ -1,0 +1,51 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "checkJs": true,
+    "allowJs": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "rootDir": ".",
+    "composite": true,
+    "tsBuildInfoFile": "./dist/tsconfig.tsbuildinfo",
+    "removeComments": false,
+    "noEmitOnError": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "resolveJsonModule": true,
+    "typeRoots": [
+      "./node_modules/@types",
+      "./shared/types",
+      "node_modules/@types"
+    ],
+    "paths": {
+      "@services/*": ["./services/*"],
+      "@shared/*": ["./shared/*"],
+      "@interfaces/*": ["./interfaces/*"],
+      "@utils/*": ["./shared/utils/*"],
+      "@domain/*": ["./shared/domain/*"],
+      "@infrastructure/*": ["./shared/infrastructure/*"]
+    },
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.js"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "tests/**/*.spec.ts"
+  ]
+}

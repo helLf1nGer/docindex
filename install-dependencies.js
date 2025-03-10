@@ -1,34 +1,44 @@
 #!/usr/bin/env node
+/**
+ * Script to install dependencies with error handling
+ */
 
-const { execSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
-console.log('Installing DocIndex dependencies...');
+const execPromise = promisify(exec);
 
-try {
-  // Read package.json to get dependencies
-  const packageJsonPath = path.join(__dirname, 'package.json');
-  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-  
-  // Get dependencies
-  const dependencies = packageJson.dependencies || {};
-  
-  // Install each dependency
-  Object.entries(dependencies).forEach(([name, version]) => {
-    console.log(`Installing ${name}@${version}...`);
-    try {
-      execSync(`npm install ${name}@${version}`, { stdio: 'inherit' });
-    } catch (error) {
-      console.error(`Error installing ${name}: ${error.message}`);
-    }
-  });
-  
-  console.log('\nAll dependencies installed successfully!');
-  console.log('\nYou can now run the setup and start the server:');
-  console.log('  npm run setup-and-start');
-  
-} catch (error) {
-  console.error(`Error installing dependencies: ${error.message}`);
-  process.exit(1);
+/**
+ * Install a dependency
+ * @param {string} name - The name of the dependency to install
+ * @returns {Promise<void>}
+ */
+async function installDependency(name) {
+  try {
+    console.log(`Installing ${name}...`);
+    const { stdout } = await execPromise(`npm install ${name}`);
+    console.log(`Successfully installed ${name}`);
+    console.log(stdout);
+  } catch (error) {
+    console.error(`Error installing ${name}: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
+  }
 }
+
+// Main function to install all dependencies
+async function installDependencies() {
+  try {
+    await installDependency('@modelcontextprotocol/sdk');
+    await installDependency('axios');
+    await installDependency('cheerio');
+    await installDependency('dotenv');
+    await installDependency('fuse.js');
+    console.log('All dependencies installed successfully!');
+  } catch (error) {
+    console.error(`Error installing dependencies: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+}
+
+// Run the installation
+installDependencies();
