@@ -45,6 +45,8 @@ export interface CrawlOptions {
   followRedirects?: boolean;
   /** Additional axios request config */
   requestConfig?: AxiosRequestConfig;
+  /** Force crawling even if document exists (default: false) */
+  force?: boolean;
 }
 
 export interface CrawlStatus {
@@ -114,6 +116,8 @@ export class SimpleCrawler extends EventEmitter {
       headers: options.headers ?? {},
       followRedirects: options.followRedirects ?? true,
       requestConfig: options.requestConfig ?? {}
+,
+      force: options.force ?? false
     };
     
     // Initialize components
@@ -274,11 +278,13 @@ export class SimpleCrawler extends EventEmitter {
       
       // Check if already in storage
       const exists = await this.documentStorage.documentExists(url);
-      if (exists) {
+      if (exists && !this.options.force) {
         console.log(`Document already exists for ${url}, skipping`);
         this.status.skipped++;
         this.visitedUrls.add(processedUrl.normalizedUrl);
         return;
+      } else if (exists && this.options.force) {
+        console.log(`Document exists for ${url}, but force flag is set - recrawling`);
       }
       
       // Fetch the URL

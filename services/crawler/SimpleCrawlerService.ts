@@ -207,6 +207,7 @@ export class SimpleCrawlerService implements ICrawlerService {
         requestDelay: source.crawlConfig.crawlDelay,
         concurrency: settings.pagePrioritization?.concurrency || 2,
         includePatterns: source.crawlConfig.includePatterns,
+        force: settings.force || false,
         excludePatterns: source.crawlConfig.excludePatterns
       });
       
