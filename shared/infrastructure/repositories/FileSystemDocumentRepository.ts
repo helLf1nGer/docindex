@@ -17,6 +17,7 @@ import { InMemoryDocumentIndex } from './document/DocumentIndex.js';
 import { DocumentCache } from './document/DocumentCache.js';
 import { DocumentFileStorage } from './document/DocumentFileStorage.js';
 import { DocumentSearch } from './document/DocumentSearch.js';
+import { DocumentValidator } from './document/DocumentValidator.js';
 
 const logger = getLogger();
 
@@ -231,6 +232,14 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    */
   async save(document: Document): Promise<void> {
     try {
+      // Validate document before saving
+      const validationResult = DocumentValidator.validateForStorage(document);
+      if (!validationResult.isValid) {
+        const messages = validationResult.messages.join(', ');
+        logger.warn(`Document validation issues before save: ${messages}`, 'FileSystemDocumentRepository');
+        // We continue with best effort, but log the issues
+      }
+      
       // Ensure document has proper content
       if (!document.textContent && document.content) {
         await this.processDocumentContent(document);
@@ -270,6 +279,17 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    * @param document Document to validate
    */
   private validateDocumentContent(document: Document): void {
+    // Use the new DocumentValidator for comprehensive validation
+    const validationResult = DocumentValidator.validateForStorage(document);
+    
+    // Log validation messages
+    if (validationResult.messages.length > 0) {
+      validationResult.messages.forEach(message => {
+        logger.warn(`Document ${document.id} validation: ${message}`, 'FileSystemDocumentRepository');
+      });
+    }
+    
+    // Handle missing text content case
     if (!document.textContent || document.textContent.trim().length === 0) {
       logger.warn(`Document ${document.id} has no text content!`, 'FileSystemDocumentRepository');
       
@@ -282,6 +302,15 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
         logger.warn(`Document ${document.id} has no HTML content either!`, 'FileSystemDocumentRepository');
         document.textContent = `[No content available: ${document.title}]`;
       }
+    }
+    
+    // If validation failed completely, log detailed error
+    if (!validationResult.isValid && validationResult.error) {
+      logger.error(
+        `Document ${document.id} failed validation: ${validationResult.error.message}`,
+        'FileSystemDocumentRepository'
+      );
+      // We still continue with best-effort approach to save what we can
     }
   }
   

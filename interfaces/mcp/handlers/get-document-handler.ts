@@ -161,6 +161,7 @@ export class GetDocumentHandler extends BaseToolHandler {
       let response = `# ${document.title}
 
 **URL:** ${document.url}
+**Document ID:** ${document.id}
 **Source:** ${document.sourceId}
 **Last Updated:** ${updatedAtStr}
 **Tags:** ${document.tags?.join(', ') || 'none'}

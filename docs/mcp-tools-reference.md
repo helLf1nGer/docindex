@@ -44,6 +44,25 @@ Last Indexing: 2025-03-09T12:34:56Z
 Server Uptime: 3d 12h 45m
 ```
 
+## Response Format Standards
+
+All MCP tools follow standardized response format conventions to ensure consistent interaction with clients and reliable automated testing:
+
+1. **Identifiers** must be consistently formatted:
+   - Document ID must be presented as `Document ID: [id]`
+   - Source ID must be presented as `Source ID: [id]`
+   - Job ID must be presented with a consistent prefix (e.g., `batch-`, `job-`)
+
+2. **Structured Content** should follow consistent patterns:
+   - Headings use Markdown format (`#`, `##`, etc.)
+   - Metadata is presented as `**Key:** Value` pairs
+   - Lists use consistent bullet points or numbering
+   - Code examples use appropriate Markdown code fences
+
+3. **Error Messages** should include clear error codes and helpful descriptions
+
+These standards ensure that all tools can be reliably tested and integrated with client applications.
+
 ## Documentation Management
 
 ### docsi-discover

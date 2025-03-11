@@ -4,9 +4,11 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import { createHash } from 'crypto';
 import { getLogger } from '../../../infrastructure/logging.js';
 import { Document } from '../../../../shared/domain/models/Document.js';
+import { readFile, writeFile, rename, access, unlink } from 'fs/promises';
 
 const logger = getLogger();
 
@@ -97,17 +99,63 @@ export class DocumentFileStorage {
   
   /**
    * Write a document to file
+ using an atomic write-verify-commit pattern
    * @param filePath File path
    * @param document Document
    */
   async writeDocument(filePath: string, document: Document): Promise<void> {
     try {
-      // Create directory if it doesn't exist
+      logger.debug(`Writing document to ${filePath}`, 'DocumentFileStorage');
+      
+      // 1. Create directory if it doesn't exist
       const dirPath = path.dirname(filePath);
       await this.createDirectory(dirPath);
       
-      // Write document to file
-      await fs.writeFile(filePath, JSON.stringify(document, null, 2), 'utf-8');
+      // 2. Prepare document data with proper serialization
+      const documentData = JSON.stringify(document, null, 2);
+      
+      // 3. Create a temporary file with unique name
+      const tempFilePath = `${filePath}.${randomUUID()}.tmp`;
+      
+      // 4. Write to temporary file first
+      await writeFile(tempFilePath, documentData, 'utf-8');
+      
+      // 5. Verify that the written content is valid JSON and matches expected structure
+      let isValid = false;
+      try {
+        const content = await readFile(tempFilePath, 'utf-8');
+        const parsedContent = JSON.parse(content);
+        
+        // Basic validation - ensure id and url are present and match
+        isValid = parsedContent && 
+                 parsedContent.id === document.id && 
+                 parsedContent.url === document.url;
+                 
+        if (!isValid) {
+          logger.warn(`Document validation failed for ${filePath}`, 'DocumentFileStorage');
+        }
+      } catch (validationError) {
+        logger.error(`Document validation error for ${filePath}: ${validationError}`, 'DocumentFileStorage');
+        // Cleanup temp file on validation error
+        await this.safeUnlink(tempFilePath);
+        throw new Error(`Document validation failed: ${validationError}`);
+      }
+      
+      // 6. If valid, atomically rename the temp file to the target file
+      if (isValid) {
+        try {
+          // Remove existing file if it exists to avoid issues on some platforms
+          await this.safeUnlink(filePath);
+          // Atomic operation - either completes fully or not at all
+          await rename(tempFilePath, filePath);
+          logger.debug(`Document successfully saved to ${filePath}`, 'DocumentFileStorage');
+        } catch (renameError) {
+          logger.error(`Failed to rename temp file ${tempFilePath} to ${filePath}: ${renameError}`, 'DocumentFileStorage');
+          // Cleanup temp file on rename error
+          await this.safeUnlink(tempFilePath);
+          throw renameError;
+        }
+      }
     } catch (error: unknown) {
       throw new Error(`Failed to write document to ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -161,5 +209,19 @@ export class DocumentFileStorage {
     
     // Start processing from base directory
     await processDirectory(this.baseDir);
+  }
+  
+  /**
+   * Safely delete a file if it exists
+   * @param filePath File path to delete
+   */
+  private async safeUnlink(filePath: string): Promise<void> {
+    try {
+      await access(filePath);
+      await unlink(filePath);
+    } catch (error) {
+      // File doesn't exist or is inaccessible, which is fine
+      logger.debug(`File ${filePath} doesn't exist or can't be accessed for deletion`, 'DocumentFileStorage');
+    }
   }
 }

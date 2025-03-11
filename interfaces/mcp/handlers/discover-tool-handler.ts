@@ -269,6 +269,7 @@ export class DiscoverToolHandler extends BaseToolHandler {
 Added and crawled documentation source:
 Name: ${name}
 URL: ${url}
+Source ID: ${id}
 Crawl depth: ${depth || 3}
 Max pages: ${pages || 100}
 Tagged with: ${tags?.length ? tags.join(', ') : 'no tags'}
@@ -369,6 +370,7 @@ Crawled ${pageCount} pages${pagesDiscovered > 0 ? `\nDiscovered ${pagesDiscovere
 Refreshed documentation source:
 Name: ${source.name}
 URL: ${source.baseUrl}
+Source ID: ${source.id}
 Crawled ${pageCount} pages${pagesDiscovered > 0 ? `\nDiscovered ${pagesDiscovered} pages` : ''}${maxDepthReached > 0 ? `\nReached depth ${maxDepthReached}` : ''}${jobId ? `\nJob ID: ${jobId}` : ''}
 Last crawled: ${source.lastCrawledAt.toISOString()}
           `.trim()
