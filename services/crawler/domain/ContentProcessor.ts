@@ -8,6 +8,8 @@
 import { getLogger } from '../../../shared/infrastructure/logging.js';
 import { extractUnifiedContent, UnifiedExtractionOptions } from '../../../shared/infrastructure/UnifiedContentExtractor.js';
 import { Document } from '../../../shared/domain/models/Document.js';
+import { getProcessorFactory } from './processors/ProcessorFactory.js';
+import { DocumentProcessorOptions } from './processors/DocumentProcessor.js';
 
 const logger = getLogger();
 
@@ -44,6 +46,29 @@ export interface ProcessedContent {
 }
 
 /**
+ * Options for content processing
+ */
+export interface ContentProcessorOptions extends UnifiedExtractionOptions {
+  /** Whether to use specialized document processors for known documentation sites */
+  useSpecializedProcessors?: boolean;
+  
+  /** Whether to convert HTML to Markdown */
+  convertToMarkdown?: boolean;
+  
+  /** Whether to apply deduplication */
+  deduplicate?: boolean;
+  
+  /** Whether to apply chunking */
+  applyChunking?: boolean;
+  
+  /** Maximum chunk size (in tokens) */
+  maxChunkSize?: number;
+
+  /** Source-specific configuration */
+  sourceConfig?: Record<string, any>;
+}
+
+/**
  * Processor for crawled content
  */
 export class ContentProcessor {
@@ -58,25 +83,51 @@ export class ContentProcessor {
    * Process HTML content
    * @param html HTML content
    * @param url URL of the document
-   * @param options Extraction options
+   * @param options Processing options
    * @returns Processed content
    */
-  processContent(html: string, url: string, options?: UnifiedExtractionOptions): ProcessedContent {
+  processContent(html: string, url: string, options?: ContentProcessorOptions): ProcessedContent {
     logger.debug(`Processing content for URL: ${url}`, 'ContentProcessor');
     
     try {
+      // Use specialized processors if enabled
+      if (options?.useSpecializedProcessors !== false) {
+        try {
+          const processorFactory = getProcessorFactory();
+          const processor = processorFactory.getProcessor(url, html);
+          
+          // If a specialized processor was selected, use it
+          if (processor.getName() !== 'GenericDocProcessor') {
+            logger.debug(`Using specialized processor ${processor.getName()} for ${url}`, 'ContentProcessor');
+            
+            // Convert options to document processor options
+            const processorOptions: DocumentProcessorOptions = {
+              debug: options?.debug || false,
+              processing: {
+                convertToMarkdown: options?.convertToMarkdown || false,
+                deduplicate: options?.deduplicate || false,
+                chunk: options?.applyChunking || false,
+                maxChunkSize: options?.maxChunkSize || 500
+              }
+            };
+            
+            return processor.process(html, url, processorOptions);
+          }
+        } catch (error) {
+          logger.warn(`Error using specialized processor: ${error}`, 'ContentProcessor');
+          // Fall back to standard processing if specialized processing fails
+        }
+      }
+      
       // Configure extraction options for comprehensive extraction
       const extractionOptions: UnifiedExtractionOptions = {
         comprehensive: true, // Use comprehensive extraction for better results
-        debug: true,        // Enable detailed logging
+        debug: options?.debug || false, // Enable detailed logging
         ...options
-     
-     // Include any user-provided options
       };
       
       // Extract content using UnifiedContentExtractor for better results
       const extracted = extractUnifiedContent(html, url, extractionOptions);
-      
       
       // Create processed content
       const processed: ProcessedContent = {
@@ -180,14 +231,12 @@ export class ContentProcessor {
       // Replace repeated newlines with a single newline
       sanitized = sanitized.replace(/\n{3,}/g, '\n\n');
       
-      return sanitized;
-      
       // If the result is still just whitespace after sanitization
       if (sanitized.trim().length === 0) {
         return '';
       }
       
-      return sanitized;
+      return sanitized.trim();
     } catch (error) {
       logger.warn(`Error sanitizing content: ${error}`, 'ContentProcessor');
       return content;

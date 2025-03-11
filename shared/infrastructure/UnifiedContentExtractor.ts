@@ -2,7 +2,7 @@
  * Unified Content Extractor
  * 
  * This module provides a comprehensive content extraction solution that combines
- * the best parts of the basic ContentExtractor and the enhanced version.
+ * the best approaches for different document types.
  * It offers robust handling of various document types and edge cases.
  */
 
@@ -10,7 +10,6 @@ import { getLogger } from './logging.js';
 import { JSDOM } from 'jsdom';
 import { ContentExtractionOptions, ContentExtractionResult, DocumentMetadata } from './ContentExtractor.js';
 import { extractContent as baseExtractContent } from './ContentExtractor.js';
-import { extractEnhancedContent } from './ContentExtractorEnhanced.js';
 
 const logger = getLogger();
 
@@ -78,32 +77,6 @@ export function extractUnifiedContent(
     
     // Determine document type for specialized extraction
     const documentType = determineDocumentType(html, url, options.sourceType);
-    
-    // For comprehensive extraction, use both extractors and combine results
-    if (options.comprehensive) {
-      try {
-        // Try enhanced extraction first
-        const enhancedResult = extractEnhancedContent(html, url);
-        
-        // Then basic extraction
-        const baseResult = baseExtractContent(html, url, options.baseOptions);
-        
-        // Combine results
-        const combinedResult = combineExtractionResults(enhancedResult, baseResult, documentType);
-        
-        if (options.debug) {
-          logger.info(
-            `Comprehensive extraction completed for ${url}. Text length: ${combinedResult.textContent.length}`,
-            'UnifiedContentExtractor'
-          );
-        }
-        
-        return combinedResult;
-      } catch (error) {
-        logger.warn(`Error in comprehensive extraction, falling back to basic: ${error}`, 'UnifiedContentExtractor');
-        // Fall back to basic extraction
-      }
-    }
     
     // For specialized document types, use targeted extraction
     if (documentType !== 'generic') {
@@ -398,73 +371,4 @@ function extractSpecializedContent(
   
   // Return null if specialized extraction failed
   return null;
-}
-
-/**
- * Combine results from multiple extractors for the best extraction
- */
-function combineExtractionResults(
-  enhancedResult: ContentExtractionResult,
-  baseResult: ContentExtractionResult,
-  documentType: string
-): ContentExtractionResult {
-  // Create a new result object
-  const combinedResult: ContentExtractionResult = {
-    textContent: '',
-    htmlContent: baseResult.htmlContent,
-    metadata: { ...baseResult.metadata },
-  };
-  
-  // Choose the better text content (prefer the one with more content)
-  if (enhancedResult.textContent && enhancedResult.textContent.length > (baseResult.textContent?.length || 0)) {
-    combinedResult.textContent = enhancedResult.textContent;
-  } else {
-    combinedResult.textContent = baseResult.textContent || '';
-  }
-  
-  // Combine headings (prefer enhanced if available)
-  combinedResult.headings = enhancedResult.headings || baseResult.headings;
-  
-  // Combine code blocks (prefer enhanced if available)
-  combinedResult.codeBlocks = enhancedResult.codeBlocks || baseResult.codeBlocks;
-  
-  // Combine links
-  if (enhancedResult.links && baseResult.links) {
-    // Combine and deduplicate links
-    combinedResult.links = Array.from(new Set([...enhancedResult.links, ...baseResult.links]));
-  } else {
-    combinedResult.links = enhancedResult.links || baseResult.links;
-  }
-  
-  // Use the best metadata
-  if (enhancedResult.metadata) {
-    // Prefer enhanced title if it's not just the URL
-    if (enhancedResult.metadata.title && !enhancedResult.metadata.title.includes('http')) {
-      combinedResult.metadata.title = enhancedResult.metadata.title;
-    }
-    
-    // Prefer enhanced description if available
-    if (enhancedResult.metadata.description) {
-      combinedResult.metadata.description = enhancedResult.metadata.description;
-    }
-    
-    // Combine keywords
-    if (enhancedResult.metadata.keywords && baseResult.metadata.keywords) {
-      combinedResult.metadata.keywords = Array.from(
-        new Set([...enhancedResult.metadata.keywords, ...(baseResult.metadata.keywords || [])])
-      );
-    } else {
-      combinedResult.metadata.keywords = enhancedResult.metadata.keywords || baseResult.metadata.keywords;
-    }
-    
-    // Use any other metadata that's available
-    combinedResult.metadata.author = enhancedResult.metadata.author || baseResult.metadata.author;
-    combinedResult.metadata.publishedDate = enhancedResult.metadata.publishedDate || baseResult.metadata.publishedDate;
-    combinedResult.metadata.modifiedDate = enhancedResult.metadata.modifiedDate || baseResult.metadata.modifiedDate;
-  }
-  
-  // Add additional document type specific metadata
-  (combinedResult.metadata as ExtendedDocumentMetadata).documentType = documentType;
-  
-  return combinedResult;
 }

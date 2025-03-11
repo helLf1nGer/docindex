@@ -10,9 +10,10 @@ import { getLogger } from '../../../shared/infrastructure/logging.js';
 import { DocumentSource } from '../../../shared/domain/models/Document.js';
 import { HttpClient } from '../../../shared/infrastructure/HttpClient.js';
 import { QueueManager } from './QueueManager.js';
-import { ContentProcessor } from './ContentProcessor.js';
+import { ContentProcessor, ContentProcessorOptions } from './ContentProcessor.js';
 import { StorageManager } from './StorageManager.js';
 import { UrlProcessor } from './UrlProcessor.js';
+import { SitemapProcessor, SitemapEntry } from './SitemapProcessor.js';
 import { strategyFactory } from './strategies/StrategyFactory.js';
 import EventEmitter from 'events';
 
@@ -45,7 +46,16 @@ export interface CrawlerEngineConfig {
   
   /** Debug mode */
   debug?: boolean;
+  
+  /** Use sitemaps for URL discovery */
+  useSitemaps?: boolean;
+  
+  /** Maximum number of retry attempts for failed requests */
+  maxRetries?: number;
 }
+
+/** Additional processing options for content */
+export type DocumentProcessingConfig = ContentProcessorOptions & { [key: string]: any };
 
 /**
  * HTTP response with metadata
@@ -82,6 +92,9 @@ export class CrawlerEngine {
   /** Event emitter for engine events */
   private eventEmitter = new EventEmitter();
   
+  /** Sitemap processor for sitemap-based URL discovery */
+  private sitemapProcessor: SitemapProcessor;
+  
   /** Set of visited URLs */
   private visited = new Set<string>();
   
@@ -105,8 +118,11 @@ export class CrawlerEngine {
     private readonly contentProcessor: ContentProcessor,
     private readonly storageManager: StorageManager,
     private readonly urlProcessor: UrlProcessor
+    
   ) {
     logger.info('CrawlerEngine initialized', 'CrawlerEngine');
+    // Initialize the sitemap processor with the same HTTP client
+    this.sitemapProcessor = new SitemapProcessor(httpClient);
   }
   
   /**
@@ -146,13 +162,47 @@ export class CrawlerEngine {
       debug: config.debug || false
     });
     
+    // If sitemaps are enabled, discover URLs from sitemaps first
+    if (config.useSitemaps !== false) {
+      try {
+        logger.info(`Checking sitemaps for ${source.baseUrl}`, 'CrawlerEngine.crawl');
+        const sitemapEntries = await this.sitemapProcessor.discoverAndProcessSitemaps(source.baseUrl);
+        
+        // Filter entries based on include/exclude patterns
+        const filteredEntries = this.sitemapProcessor.filterEntries(
+          sitemapEntries,
+          source.crawlConfig.includePatterns,
+          source.crawlConfig.excludePatterns
+        );
+        
+        if (filteredEntries.length > 0) {
+          logger.info(`Found ${filteredEntries.length} URLs from sitemaps`, 'CrawlerEngine.crawl');
+          
+          // Add URLs to queue with appropriate depth calculation
+          this.addSitemapUrlsToQueue(filteredEntries, source, queueManager);
+          
+          this.emitEvent('sitemap-urls-added', { count: filteredEntries.length });
+        }
+      } catch (error) {
+        logger.warn(`Error processing sitemaps: ${error}`, 'CrawlerEngine.crawl');
+        // Continue with regular crawling even if sitemap processing fails
+      }
+    }
+    
     // Set up event forwarding from queue manager
     queueManager.getEventEmitter().on('queue-stats-updated', (stats) => {
       this.emitEvent('queue-stats-updated', stats.data);
     });
     
+    // Log the initial URL being added to the queue
+    logger.info(
+      `Adding initial URL to queue: ${source.baseUrl} (depth: 0)`,
+      'CrawlerEngine.crawl'
+    );
+    
     // Initialize crawling queue with the base URL
-    queueManager.addUrl(source.baseUrl, 0, '');
+    const initialUrlAdded = queueManager.addUrl(source.baseUrl, 0, '');
+    logger.info(`Initial URL added to queue: ${initialUrlAdded}`, 'CrawlerEngine.crawl');
     
     // Track crawled count
     let crawledCount = 0;
@@ -174,6 +224,7 @@ export class CrawlerEngine {
       const batch = queueManager.getNextBatch(batchSize);
       
       if (batch.length === 0) {
+        logger.debug(`Got empty batch, in-progress URLs: ${queueManager.getStats().inProgress}`, 'CrawlerEngine.crawl');
         // If no URLs to process but in-progress URLs, wait a bit and try again
         if (queueManager.getStats().inProgress > 0) {
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -181,6 +232,7 @@ export class CrawlerEngine {
         }
         
         // Otherwise, we're done
+        logger.info(`No more URLs to process, queue is empty`, 'CrawlerEngine.crawl');
         break;
       }
       
@@ -244,6 +296,46 @@ export class CrawlerEngine {
   }
   
   /**
+   * Add URLs discovered from sitemaps to the queue
+   * @param entries Sitemap entries to add
+   * @param source Documentation source
+   * @param queueManager Queue manager to add URLs to
+   * @returns Number of URLs added
+   */
+  private addSitemapUrlsToQueue(
+    entries: SitemapEntry[],
+    source: DocumentSource,
+    queueManager: QueueManager
+  ): number {
+    let addedCount = 0;
+    
+    for (const entry of entries) {
+      // Calculate initial depth based on URL structure
+      // This is an approximation - we set a reasonable initial depth
+      // since sitemap URLs don't have parent-child relationships
+      const initialDepth = this.urlProcessor.calculateCrawlDepth(
+        entry.url,
+        source.baseUrl
+      );
+      
+      // Add URL to queue - it's ok if it returns false (already queued)
+      const added = queueManager.addUrl(entry.url, initialDepth, source.baseUrl);
+      if (added) {
+        addedCount++;
+      }
+    }
+    
+    return addedCount;
+  }
+  
+  /**
+   * Cancel the crawling process
+      maxDepthReached: finalStats.maxDepthReached,
+      runtime
+    };
+  }
+  
+  /**
    * Cancel the crawling process
    */
   cancel(): void {
@@ -271,12 +363,12 @@ export class CrawlerEngine {
     url: string,
     depth: number,
     parentUrl: string,
-    source: DocumentSource,
+    source: DocumentSource, 
     config: CrawlerEngineConfig,
     queueManager: QueueManager
   ): Promise<void> {
     logger.info(`Processing URL: ${url} (depth: ${depth}, parent: ${parentUrl})`, 'CrawlerEngine');
-    
+
     // Check if URL was already visited (protection against cycles)
     if (this.visited.has(url)) {
       logger.debug(`URL already visited: ${url}`, 'CrawlerEngine');
@@ -288,7 +380,11 @@ export class CrawlerEngine {
     
     try {
       // Fetch the page content
-      const { content, metadata } = await this.fetchPage(url);
+      const { content, metadata } = await this.fetchPage(url, config);
+      
+      if (!content) {
+        throw new Error(`Empty content returned for ${url}`);
+      }
       
       // Skip non-HTML content
       if (!metadata.contentType.includes('html') && !metadata.contentType.includes('xml')) {
@@ -297,8 +393,26 @@ export class CrawlerEngine {
         return;
       }
       
-      // Process content using content processor
-      let processedContent = this.contentProcessor.processContent(content, url);
+      // Prepare content processing options
+      const contentOptions: ContentProcessorOptions = {
+        // Enable specialized processors
+        useSpecializedProcessors: true,
+        
+        // Enable enhanced processing features
+        convertToMarkdown: true,
+        deduplicate: true,
+        applyChunking: false, // Chunking is better left to the indexer
+        
+        // Debug mode
+        debug: config.debug || false,
+        
+        // Source-specific configurations based on URL patterns
+        sourceConfig: {
+          host: new URL(url).hostname
+        }
+      };
+      
+      let processedContent = this.contentProcessor.processContent(content, url, contentOptions);
       
       // Ensure processedContent has valid structure even if extraction failed
       if (!processedContent || !processedContent.textContent) {
@@ -331,6 +445,7 @@ export class CrawlerEngine {
       
       // Extract links for further crawling
       const links = this.urlProcessor.extractLinks(content, url);
+      logger.debug(`Extracted ${links.length} links from ${url}`, 'CrawlerEngine');
       
       logger.debug(`Extracted ${links.length} links from ${url}`, 'CrawlerEngine');
       
@@ -338,6 +453,7 @@ export class CrawlerEngine {
       let newLinksCount = 0;
       for (const link of links) {
         // Use improved depth calculation from parent relationship
+        logger.debug(`Processing link: ${link} from parent: ${url}`, 'CrawlerEngine');
         const childDepth = this.urlProcessor.calculateCrawlDepthFromParent(
           link, 
           url, 
@@ -346,6 +462,7 @@ export class CrawlerEngine {
         );
         
         // Process URL through the URL processor
+        logger.debug(`Calculated depth for ${link}: ${childDepth}`, 'CrawlerEngine');
         const processedUrl = this.urlProcessor.processUrl(
           link,
           source,
@@ -354,7 +471,7 @@ export class CrawlerEngine {
         );
         
         if (processedUrl.accepted) {
-          logger.debug(`Adding link: ${processedUrl.url} (depth: ${childDepth}, parent: ${url})`, 'CrawlerEngine');
+          logger.info(`Adding link: ${processedUrl.url} (depth: ${childDepth}, parent: ${url})`, 'CrawlerEngine');
           // Use actual calculated depth
           if (queueManager.addUrl(processedUrl.url, childDepth, url)) {
             newLinksCount++;
@@ -382,9 +499,13 @@ export class CrawlerEngine {
   /**
    * Fetch a page from a URL
    * @param url URL to fetch
+   * @param config Crawler configuration
    * @returns Page content and metadata
    */
-  private async fetchPage(url: string): Promise<{
+  private async fetchPage(
+    url: string,
+    config?: CrawlerEngineConfig
+  ): Promise<{
     content: string;
     metadata: {
       statusCode: number;
@@ -396,22 +517,8 @@ export class CrawlerEngine {
     const startTime = Date.now();
     
     try {
-      // Fetch the page
-      const response = await this.httpClient.get(url, {
-        headers: {
-          'Accept': 'text/html,application/xhtml+xml,application/xml',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 DocSI/1.0',
-          'Cache-Control': 'no-cache',
-          // Some sites require these headers to avoid bot detection
-          'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate'
-        },
-        timeout: 30000 // 30 second timeout
-      });
-      
+      // Use the fetchWithRetry method to handle retries
+      const response = await this.fetchWithRetry(url, config);
       const fetchTime = Date.now() - startTime;
       
       // Extract content type from headers
@@ -436,6 +543,74 @@ export class CrawlerEngine {
       // Re-throw to let the caller handle it
       throw error;
     }
+  }
+
+  /**
+   * Fetch a URL with automatic retry on failure
+   * @param url URL to fetch
+   * @returns Page content and metadata
+   */
+  private async fetchWithRetry(
+    url: string,
+    config?: CrawlerEngineConfig
+  ): Promise<{
+    statusCode: number;
+    headers: Record<string, string>;
+    body: string;
+  }> {
+    // Get max retries from config or use default
+    const maxRetries = config?.maxRetries || 3;
+    let lastError: Error | null = null;
+    
+    logger.debug(`Fetching ${url} with max ${maxRetries} retries`, 'CrawlerEngine.fetchWithRetry');
+    
+    // Try fetching with retries
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          logger.info(`Retry attempt ${attempt}/${maxRetries} for ${url}`, 'CrawlerEngine.fetchWithRetry');
+        }
+      
+        // Fetch the page
+        const response = await this.httpClient.get(url, {
+          headers: {
+            'Accept': 'text/html,application/xhtml+xml,application/xml',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 DocSI/1.0',
+            'Cache-Control': 'no-cache',
+            // Some sites require these headers to avoid bot detection
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate'
+          },
+          timeout: 30000 // 30 second timeout
+        });
+        
+        // Check if the response is valid (some servers return 200 with error pages)
+        if (response.statusCode >= 400) {
+          throw new Error(`HTTP error: ${response.statusCode}`);
+        }
+        
+        return response; // Success, return the response
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        logger.warn(`Fetch attempt ${attempt + 1}/${maxRetries} failed for ${url}: ${lastError.message}`, 'CrawlerEngine.fetchWithRetry');
+        
+        if (attempt < maxRetries - 1) {
+          // Calculate backoff delay with jitter to prevent thundering herd
+          const baseDelay = Math.pow(2, attempt) * 1000; // Exponential backoff
+          const jitter = Math.random() * 1000; // Random jitter up to 1 second
+          const delay = baseDelay + jitter;
+          
+          logger.debug(`Waiting ${delay.toFixed(0)}ms before retry ${attempt + 1}`, 'CrawlerEngine.fetchWithRetry');
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+    
+    // If we get here, all retries failed
+    throw lastError || new Error(`Failed to fetch ${url} after ${maxRetries} retries`);
   }
   
   /**

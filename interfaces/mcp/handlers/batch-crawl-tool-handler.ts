@@ -36,6 +36,15 @@ interface BatchCrawlArgs {
 
   /** Wait time for initial status report (default: 30 seconds) */
   timeout?: number;
+  
+  /** Use sitemap discovery for finding URLs (default: true) */
+  useSitemaps?: boolean;
+  
+  /** Number of retry attempts for failed requests (default: 3) */
+  maxRetries?: number;
+  
+  /** Enable debug mode for verbose logging (default: true) */
+  debug?: boolean;
 }
 
 /**
@@ -86,6 +95,9 @@ interface BackgroundJob {
     strategy: string;
     concurrency: number;
     prioritize: string[];
+    useSitemaps: boolean;
+    maxRetries: number;
+    debug: boolean;
   };
 }
 
@@ -161,8 +173,8 @@ export class BatchCrawlToolHandler extends BaseToolHandler {
             },
             concurrency: {
               type: 'integer',
-              description: 'Number of concurrent requests per source (default: 5). Higher values crawl faster but may overload servers.',
-              default: 5
+              description: 'Number of concurrent requests per source (default: 2). Higher values crawl faster but may overload servers.',
+              default: 2
             },
             prioritize: {
               type: 'array',
@@ -175,6 +187,21 @@ export class BatchCrawlToolHandler extends BaseToolHandler {
               type: 'integer',
               description: 'Wait time in seconds for initial status report (default: 30). The tool will wait this long before returning initial results.',
               default: 30
+            },
+            useSitemaps: {
+              type: 'boolean',
+              description: 'Whether to use sitemaps for URL discovery (default: true). Enables XML sitemap processing for efficient URL discovery.',
+              default: true
+            },
+            maxRetries: {
+              type: 'integer',
+              description: 'Maximum number of retry attempts for failed requests (default: 3).',
+              default: 3
+            },
+            debug: {
+              type: 'boolean',
+              description: 'Enable debug mode for verbose logging (default: true).',
+              default: true
             }
           },
           required: ['sources']
@@ -228,9 +255,12 @@ export class BatchCrawlToolHandler extends BaseToolHandler {
       const depth = args.depth || 5;
       const pages = args.pages || 500;
       const strategy = args.strategy || 'hybrid';
-      const concurrency = args.concurrency || 5;
+      const concurrency = args.concurrency || 2; // Lowered default to 2 for better stability
       const prioritize = args.prioritize || [];
       const timeout = args.timeout || 30;
+      const useSitemaps = args.useSitemaps !== false; // Default to true
+      const maxRetries = args.maxRetries || 3;
+      const debug = args.debug !== false; // Default to true
       
       // Find sources to crawl
       let sources: DocumentSource[] = [];
@@ -271,7 +301,10 @@ export class BatchCrawlToolHandler extends BaseToolHandler {
           pages,
           strategy,
           concurrency,
-          prioritize
+          prioritize,
+          useSitemaps,
+          maxRetries,
+          debug
         }
       };
       
@@ -309,6 +342,9 @@ Configuration:
   - Crawl strategy: ${strategy}
   - Concurrency: ${concurrency}
   - Prioritized patterns: ${prioritize.length > 0 ? prioritize.join(', ') : 'none'}
+  - Use sitemaps: ${useSitemaps ? 'Yes' : 'No'}
+  - Max retries: ${maxRetries}
+  - Debug mode: ${debug ? 'Enabled' : 'Disabled'}
 
 Current status: ${updatedJob.status}
 Initial progress:
@@ -326,7 +362,12 @@ Use the docsi-batch-status tool with this job ID to check progress.
             type: 'text',
             text: responseText
           }
-        ]
+,
+          {
+            type: 'text',
+            text: `JobID: ${jobId}`
+          }
+        ],
       };
     } catch (error) {
       return this.createErrorResponse(error instanceof Error ? error.message : String(error));
@@ -403,6 +444,9 @@ Configuration:
   - Crawl strategy: ${job.config.strategy}
   - Concurrency: ${job.config.concurrency}
   - Prioritized patterns: ${job.config.prioritize.length > 0 ? job.config.prioritize.join(', ') : 'none'}
+  - Use sitemaps: ${job.config.useSitemaps ? 'Yes' : 'No'}
+  - Max retries: ${job.config.maxRetries}
+  - Debug mode: ${job.config.debug ? 'Enabled' : 'Disabled'}
 
 Overall Progress:
   - Pages crawled: ${job.progress.pagesCrawled}
@@ -411,9 +455,9 @@ Overall Progress:
 
 Individual Source Status:
 ${jobStatuses.map(js => `- ${js.sourceName}: ${js.status}, Crawled: ${js.progress.pagesCrawled}, Discovered: ${js.progress.pagesDiscovered}, Depth: ${js.progress.maxDepthReached}`).join('\n')}
-            `.trim()
-          }
-        ]
+          `.trim()
+        }
+      ]
     };
   }
   
@@ -426,7 +470,16 @@ ${jobStatuses.map(js => `- ${js.sourceName}: ${js.status}, Crawled: ${js.progres
   private async processBatchJob(
     jobId: string,
     sources: DocumentSource[],
-    config: { depth: number, pages: number, strategy: string, concurrency: number, prioritize: string[] }
+    config: { 
+      depth: number, 
+      pages: number, 
+      strategy: string, 
+      concurrency: number, 
+      prioritize: string[],
+      useSitemaps: boolean,
+      maxRetries: number,
+      debug: boolean
+    }
   ): Promise<void> {
     // Get the job
     const job = this.backgroundJobs.get(jobId);
@@ -446,19 +499,18 @@ ${jobStatuses.map(js => `- ${js.sourceName}: ${js.status}, Crawled: ${js.progres
           const settings: CrawlJobSettings = {
             sourceId: source.id,
             maxDepth: config.depth,
-            maxPages: config.pages
-          };
-          
-          // Add page prioritization settings based on strategy
-          if (config.strategy === 'hybrid' || config.strategy === 'depth') {
-            // For hybrid and depth strategies, use a custom queue processor
-            // that will be implemented in the crawler service
-            settings['pagePrioritization'] = {
-              strategy: config.strategy,
+            maxPages: config.pages,
+            pagePrioritization: {
+              // Ensure strategy is of the correct type
+              strategy: (config.strategy === 'breadth' || config.strategy === 'depth' || 
+                         config.strategy === 'hybrid') ? config.strategy : 'hybrid',
               patterns: config.prioritize,
               concurrency: config.concurrency
-            };
-          }
+            },
+            useSitemaps: config.useSitemaps,
+            maxRetries: config.maxRetries,
+            debug: config.debug
+          };
           
           // Start crawl job
           if (this.crawlerService) {

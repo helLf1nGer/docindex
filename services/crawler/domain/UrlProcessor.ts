@@ -7,6 +7,7 @@
 
 import { URL } from 'url';
 import { getLogger } from '../../../shared/infrastructure/logging.js';
+import { JSDOM } from 'jsdom';
 import { DocumentSource } from '../../../shared/domain/models/Document.js';
 
 const logger = getLogger();
@@ -51,7 +52,7 @@ export class UrlProcessor {
     currentDepth: number
   ): ProcessedUrl {
     try {
-      logger.debug(`Processing URL: ${url} (depth: ${currentDepth}, maxDepth: ${source.crawlConfig.maxDepth})`, 'UrlProcessor');
+      logger.info(`Processing URL: ${url} (depth: ${currentDepth}, maxDepth: ${source.crawlConfig.maxDepth})`, 'UrlProcessor');
       
       // Normalize URL
       const normalizedUrl = this.normalizeUrl(url, parentUrl);
@@ -63,6 +64,7 @@ export class UrlProcessor {
         };
       }
       
+      logger.debug(`Normalized URL: ${normalizedUrl}`, 'UrlProcessor');
       // Check if URL is within allowed depth
       // Note: We're comparing against maxDepth here, not maxDepth-1, to ensure we get to maxDepth level
       if (currentDepth > source.crawlConfig.maxDepth) {
@@ -76,6 +78,7 @@ export class UrlProcessor {
       // Check if URL is same hostname as source
       const urlObj = new URL(normalizedUrl);
       const sourceUrlObj = new URL(source.baseUrl);
+      logger.debug(`URL hostname: ${urlObj.hostname}, source hostname: ${sourceUrlObj.hostname}`, 'UrlProcessor');
       
       if (urlObj.hostname !== sourceUrlObj.hostname) {
         return {
@@ -147,6 +150,7 @@ export class UrlProcessor {
       }
       
       // URL is accepted
+      logger.info(`URL accepted: ${normalizedUrl} (depth: ${currentDepth})`, 'UrlProcessor');
       return {
         url: normalizedUrl,
         accepted: true
@@ -174,37 +178,53 @@ export class UrlProcessor {
       
       const links: string[] = [];
       
-      // Extract links using regex
-      // This is a simplified approach - in a production system you might use a DOM parser
-      const linkRegex = /<a[^>]+href=["']([^"']+)["'][^>]*>/gi;
-      let match;
-      
-      while ((match = linkRegex.exec(html)) !== null) {
-        try {
-          let href = match[1].trim();
-          
-          // Skip fragment-only URLs, javascript: URLs, and mailto: links
-          if (href.startsWith('#') || 
-              href.startsWith('javascript:') || 
-              href.startsWith('mailto:') ||
-              href.startsWith('tel:')) {
-            continue;
-          }
-          
-          // Resolve relative URLs
+      try {
+        // Use JSDOM to properly parse HTML and extract links
+        const dom = new JSDOM(html, { url: baseUrl });
+        const document = dom.window.document;
+        
+        // Get all anchor elements
+        const anchors = document.querySelectorAll('a');
+        logger.debug(`Found ${anchors.length} anchor elements`, 'UrlProcessor');
+        
+        // Extract href attributes
+        for (const anchor of Array.from(anchors)) {
           try {
-            const normalizedUrl = this.normalizeUrl(href, baseUrl);
-            if (normalizedUrl) {
-              links.push(normalizedUrl);
+            const href = anchor.getAttribute('href');
+            
+            // Skip empty, null, or undefined hrefs
+            if (!href) {
+              continue;
+            }
+            
+            // Skip fragment-only URLs, javascript: URLs, and mailto: links
+            if (href.startsWith('#') || 
+                href.startsWith('javascript:') || 
+                href.startsWith('mailto:') ||
+                href.startsWith('tel:')) {
+              continue;
+            }
+            
+            // Resolve relative URLs
+            try {
+              const normalizedUrl = this.normalizeUrl(href, baseUrl);
+              if (normalizedUrl) {
+                links.push(normalizedUrl);
+              }
+            } catch (error) {
+              // Skip invalid URLs
+              logger.debug(`Skipping invalid URL: ${href}`, 'UrlProcessor');
+              continue;
             }
           } catch (error) {
-            // Skip invalid URLs
+            // Skip problematic links
+            logger.debug(`Error processing anchor: ${error}`, 'UrlProcessor');
             continue;
           }
-        } catch (error) {
-          // Skip problematic links
-          continue;
         }
+      } catch (error) {
+        logger.error(`Error parsing HTML with JSDOM: ${error}`, 'UrlProcessor');
+        // Fallback to empty links array
       }
       
       // Remove duplicates
@@ -226,6 +246,7 @@ export class UrlProcessor {
    */
   normalizeUrl(url: string, baseUrl: string): string | null {
     try {
+      logger.debug(`Normalizing URL: ${url} with base: ${baseUrl}`, 'UrlProcessor');
       // Handle relative URLs
       const absoluteUrl = new URL(url, baseUrl);
       let normalized = absoluteUrl.href;
@@ -257,6 +278,7 @@ export class UrlProcessor {
         }
       }
       
+      logger.debug(`Normalized result: ${normalized}`, 'UrlProcessor');
       return normalized;
     } catch (error) {
       // Invalid URL
@@ -304,7 +326,7 @@ export class UrlProcessor {
       }
 
       // Calculate depth based on additional segments
- // beyond the base path
+      // beyond the base path
       // This provides a structure-based depth calculation
       let pathBasedDepth = urlSegments.length - commonPrefixLength;
       return pathBasedDepth > 0 ? pathBasedDepth : 0;
@@ -329,10 +351,12 @@ export class UrlProcessor {
     parentDepth: number,
     baseUrl: string
   ): number {
+    logger.debug(`Calculating crawl depth for ${url} from parent ${parentUrl} (depth: ${parentDepth})`, 'UrlProcessor');
     // If URL is same as parent or base, keep same depth
     if (url === parentUrl || url === baseUrl) {
       return parentDepth;
     }
+    logger.debug(`Incrementing depth for ${url} to ${parentDepth + 1}`, 'UrlProcessor');
     
     // Otherwise, increment from parent depth - this is the key to proper depth tracking
     return parentDepth + 1;

@@ -41,15 +41,30 @@ export interface CrawlJobSettings {
   
   /** Optional page prioritization configuration */
   pagePrioritization?: {
-    /** Crawl strategy (breadth-first, depth-first, or hybrid) */
+    /** 
+     * Crawl strategy (breadth-first, depth-first, or hybrid) 
+     * - breadth: Prioritizes URLs at lower depths (width-first)
+     * - depth: Prioritizes following paths deeper (depth-first)  
+     * - hybrid: Balanced approach with pattern prioritization (recommended)
+     */
     strategy: 'breadth' | 'depth' | 'hybrid';
     
+    /** URL or title patterns to prioritize during crawling */
     /** URL or title patterns to prioritize */
     patterns: string[];
     
     /** Number of concurrent requests */
     concurrency: number;
   };
+  
+  /** Whether to use sitemaps for URL discovery (default: true) */
+  useSitemaps?: boolean;
+  
+  /** Maximum number of retry attempts for failed requests (default: 3) */
+  maxRetries?: number;
+  
+  /** Debug mode for verbose logging */
+  debug?: boolean;
 }
 
 /**
@@ -370,14 +385,25 @@ export class CrawlerService implements ICrawlerService {
       
       // Determine crawl configuration
       const config = {
+        // Core settings
         maxDepth: settings.maxDepth ?? source.crawlConfig.maxDepth,
         maxPages: settings.maxPages ?? source.crawlConfig.maxPages,
         force: settings.force,
+        
+        // Enhanced features
+        useSitemaps: settings.useSitemaps !== undefined ? settings.useSitemaps : true, // Enable sitemaps by default
+        maxRetries: settings.maxRetries || 3, // Default to 3 retries
+        
+        // Timing settings
         crawlDelay: source.crawlConfig.crawlDelay,
+        
+        // Crawl strategy configuration
         strategy: settings.pagePrioritization?.strategy || 'hybrid',
         prioritizationPatterns: settings.pagePrioritization?.patterns || [],
-        concurrency: settings.pagePrioritization?.concurrency || 1, // Default to 1 if not specified
-        debug: true // Enable detailed logging
+        concurrency: settings.pagePrioritization?.concurrency || 2, // Default to 2 for better concurrency
+        
+        // Debug mode
+        debug: settings.debug || true // Enable debug logging by default
       };
       
       // Start the crawl

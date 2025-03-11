@@ -3,22 +3,28 @@
  * Stores document sources as JSON files in a directory structure
  */
 
-import fs from 'fs/promises';
 import path from 'path';
-import { createHash } from 'crypto';
 import {
   IDocumentSourceRepository,
   DocumentSourceSearchQuery
 } from '../../../shared/domain/repositories/DocumentSourceRepository.js';
 import { DocumentSource } from '../../../shared/domain/models/Document.js';
 import { config } from '../config.js';
-import Fuse from 'fuse.js';
+import { getLogger } from '../logging.js';
+import { InMemorySourceIndex } from './source/SourceIndex.js';
+import { SourceFileStorage } from './source/SourceFileStorage.js';
+import { SourceSearch } from './source/SourceSearch.js';
+
+const logger = getLogger();
 
 /**
  * File system-based document source repository
  */
 export class FileSystemDocumentSourceRepository implements IDocumentSourceRepository {
   private baseDir: string;
+  private index: InMemorySourceIndex;
+  private storage: SourceFileStorage;
+  private searchService: SourceSearch;
   
   /**
    * Create a new file system document source repository
@@ -26,6 +32,13 @@ export class FileSystemDocumentSourceRepository implements IDocumentSourceReposi
    */
   constructor(baseDir?: string) {
     this.baseDir = baseDir || path.join(config.dataDir, 'sources');
+    
+    // Initialize components
+    this.index = new InMemorySourceIndex();
+    this.storage = new SourceFileStorage(this.baseDir);
+    this.searchService = new SourceSearch();
+    
+    logger.info(`FileSystemDocumentSourceRepository initialized with base directory: ${this.baseDir}`, 'FileSystemDocumentSourceRepository');
   }
   
   /**
@@ -33,30 +46,40 @@ export class FileSystemDocumentSourceRepository implements IDocumentSourceReposi
    */
   async initialize(): Promise<void> {
     try {
-      await fs.mkdir(this.baseDir, { recursive: true });
+      logger.info('Initializing document source repository...', 'FileSystemDocumentSourceRepository');
+      
+      // Initialize storage
+      await this.storage.initialize();
+      
+      // Build index
+      await this.buildIndex();
+      
+      logger.info(`Document source repository initialized. Indexed ${this.index.size} sources.`, 'FileSystemDocumentSourceRepository');
     } catch (error: unknown) {
       throw new Error(`Failed to initialize document source repository: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   
   /**
-   * Get the file path for a document source
-   * @param id Source ID
-   * @returns File path
+   * Build index for existing sources
    */
-  private getFilePath(id: string): string {
-    // Use a simpler structure for sources since we expect fewer of them
-    const safeName = id.replace(/[^a-zA-Z0-9-]/g, '_');
+  private async buildIndex(): Promise<void> {
+    logger.info('Building source index...', 'FileSystemDocumentSourceRepository');
     
-    // Ensure path is within our base directory to prevent path traversal
-    const filePath = path.join(this.baseDir, `${safeName}.json`);
+    // Clear existing index
+    this.index.clear();
     
-    // Verify the path is still within our base directory
-    if (!path.normalize(filePath).startsWith(path.normalize(this.baseDir))) {
-      throw new Error('Security error: attempted path traversal');
-    }
+    // Load all sources from storage
+    await this.storage.walkDirectory(async (filePath) => {
+      try {
+        const source = await this.storage.readSource(filePath);
+        this.index.addSource(source);
+      } catch (error: unknown) {
+        logger.warn(`Error indexing source file ${filePath}: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentSourceRepository');
+      }
+    });
     
-    return filePath;
+    logger.info(`Indexed ${this.index.size} sources.`, 'FileSystemDocumentSourceRepository');
   }
   
   /**
@@ -66,21 +89,29 @@ export class FileSystemDocumentSourceRepository implements IDocumentSourceReposi
    */
   async findById(id: string): Promise<DocumentSource | null> {
     try {
-      const filePath = this.getFilePath(id);
+      // Check if source is in index
+      const source = this.index.getById(id);
+      if (source) {
+        return source;
+      }
       
-      // Check if the file exists
-      try {
-        await fs.access(filePath);
-      } catch {
+      // Not in index, try to load from storage
+      const filePath = this.storage.getFilePath(id);
+      
+      // Check if file exists
+      if (!await this.storage.fileExists(filePath)) {
         return null;
       }
       
-      // Read and parse the file
-      const content = await fs.readFile(filePath, 'utf-8');
-      return JSON.parse(content) as DocumentSource;
+      // Read source from file
+      const loadedSource = await this.storage.readSource(filePath);
+      
+      // Add to index
+      this.index.addSource(loadedSource);
+      
+      return loadedSource;
     } catch (error: unknown) {
-      // Log error and return null (don't expose file system errors to clients)
-      console.error(`Error finding document source by ID: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(`Error finding document source by ID: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentSourceRepository');
       return null;
     }
   }
@@ -92,10 +123,20 @@ export class FileSystemDocumentSourceRepository implements IDocumentSourceReposi
    */
   async findByName(name: string): Promise<DocumentSource | null> {
     try {
-      const sources = await this.loadAllSources();
-      return sources.find(source => source.name === name) || null;
+      // Check if source is in index
+      const source = this.index.findByName(name);
+      if (source) {
+        return source;
+      }
+      
+      // Not in index, load all sources
+      await this.loadAllSources();
+      
+      // Try again after loading all sources
+      const foundSource = this.index.findByName(name);
+      return foundSource || null;
     } catch (error: unknown) {
-      console.error(`Error finding document source by name: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(`Error finding document source by name: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentSourceRepository');
       return null;
     }
   }
@@ -107,10 +148,20 @@ export class FileSystemDocumentSourceRepository implements IDocumentSourceReposi
    */
   async findByBaseUrl(baseUrl: string): Promise<DocumentSource | null> {
     try {
-      const sources = await this.loadAllSources();
-      return sources.find(source => source.baseUrl === baseUrl) || null;
+      // Check if source is in index
+      const source = this.index.findByBaseUrl(baseUrl);
+      if (source) {
+        return source;
+      }
+      
+      // Not in index, load all sources
+      await this.loadAllSources();
+      
+      // Try again after loading all sources
+      const foundSource = this.index.findByBaseUrl(baseUrl);
+      return foundSource || null;
     } catch (error: unknown) {
-      console.error(`Error finding document source by base URL: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(`Error finding document source by base URL: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentSourceRepository');
       return null;
     }
   }
@@ -122,14 +173,20 @@ export class FileSystemDocumentSourceRepository implements IDocumentSourceReposi
    */
   async save(source: DocumentSource): Promise<void> {
     try {
-      const filePath = this.getFilePath(source.id);
+      logger.info(`Saving document source: ${source.name} (${source.id})`, 'FileSystemDocumentSourceRepository');
       
-      // Ensure directory exists
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      // Get file path
+      const filePath = this.storage.getFilePath(source.id);
       
-      // Write source to file
-      await fs.writeFile(filePath, JSON.stringify(source, null, 2), 'utf-8');
+      // Write to storage
+      await this.storage.writeSource(filePath, source);
+      
+      // Update index
+      this.index.addSource(source);
+      
+      logger.info(`Document source saved successfully: ${source.name} (${source.id})`, 'FileSystemDocumentSourceRepository');
     } catch (error: unknown) {
+      logger.error(`Failed to save document source: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentSourceRepository');
       throw new Error(`Failed to save document source: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -141,21 +198,25 @@ export class FileSystemDocumentSourceRepository implements IDocumentSourceReposi
    */
   async delete(id: string): Promise<boolean> {
     try {
-      const filePath = this.getFilePath(id);
+      logger.info(`Deleting document source: ${id}`, 'FileSystemDocumentSourceRepository');
       
-      // Check if the file exists
-      try {
-        await fs.access(filePath);
-      } catch {
+      // Get file path
+      const filePath = this.storage.getFilePath(id);
+      
+      // Check if file exists
+      if (!await this.storage.fileExists(filePath)) {
         return false;
       }
       
-      // Delete the file
-      await fs.unlink(filePath);
+      // Delete from storage
+      const result = await this.storage.deleteSource(filePath);
       
-      return true;
+      // Remove from index
+      this.index.removeSource(id);
+      
+      return result;
     } catch (error: unknown) {
-      console.error(`Error deleting document source: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(`Error deleting document source: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentSourceRepository');
       return false;
     }
   }
@@ -167,55 +228,15 @@ export class FileSystemDocumentSourceRepository implements IDocumentSourceReposi
    */
   async search(query: DocumentSourceSearchQuery): Promise<DocumentSource[]> {
     try {
+      logger.info(`Searching document sources: ${JSON.stringify(query)}`, 'FileSystemDocumentSourceRepository');
+      
       // Load all sources
       const sources = await this.loadAllSources();
       
-      // Filter by tags if provided
-      let filteredSources = sources;
-      if (query.tags && query.tags.length > 0) {
-        filteredSources = filteredSources.filter(source => 
-          query.tags!.every(tag => source.tags.includes(tag))
-        );
-      }
-      
-      // Filter by added date if provided
-      if (query.addedAfter) {
-        filteredSources = filteredSources.filter(source => 
-          new Date(source.addedAt) >= query.addedAfter!
-        );
-      }
-      
-      if (query.addedBefore) {
-        filteredSources = filteredSources.filter(source => 
-          new Date(source.addedAt) <= query.addedBefore!
-        );
-      }
-      
-      // Text search if provided
-      if (query.text) {
-        const fuse = new Fuse(filteredSources, {
-          keys: ['name', 'baseUrl'],
-          includeScore: true,
-          threshold: 0.4
-        });
-        
-        const results = fuse.search(query.text);
-        filteredSources = results.map(result => result.item);
-      }
-      
-      // Apply pagination
-      let result = filteredSources;
-      if (query.offset) {
-        result = result.slice(query.offset);
-      }
-      
-      if (query.limit) {
-        result = result.slice(0, query.limit);
-      }
-      
-      return result;
+      // Perform search
+      return this.searchService.executeSearch(sources, query);
     } catch (error: unknown) {
-      console.error(`Error searching document sources: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(`Error searching document sources: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentSourceRepository');
       return [];
     }
   }
@@ -257,7 +278,7 @@ export class FileSystemDocumentSourceRepository implements IDocumentSourceReposi
       
       return result;
     } catch (error: unknown) {
-      console.error(`Error finding all document sources: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(`Error finding all document sources: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentSourceRepository');
       return [];
     }
   }
@@ -269,7 +290,7 @@ export class FileSystemDocumentSourceRepository implements IDocumentSourceReposi
    */
   async count(query?: DocumentSourceSearchQuery): Promise<number> {
     if (!query) {
-      return this.countAllSources();
+      return this.index.size;
     }
     
     const sources = await this.search({
@@ -282,20 +303,6 @@ export class FileSystemDocumentSourceRepository implements IDocumentSourceReposi
   }
   
   /**
-   * Count all document sources in the repository
-   * @returns Promise resolving to the count
-   */
-  private async countAllSources(): Promise<number> {
-    try {
-      const sources = await this.loadAllSources();
-      return sources.length;
-    } catch (error: unknown) {
-      console.error(`Error counting document sources: ${error instanceof Error ? error.message : String(error)}`);
-      return 0;
-    }
-  }
-  
-  /**
    * Update the lastCrawledAt timestamp for a source
    * @param id Source ID
    * @param timestamp New lastCrawledAt timestamp
@@ -303,6 +310,8 @@ export class FileSystemDocumentSourceRepository implements IDocumentSourceReposi
    */
   async updateLastCrawledAt(id: string, timestamp: Date): Promise<void> {
     try {
+      logger.info(`Updating lastCrawledAt for source ${id}: ${timestamp.toISOString()}`, 'FileSystemDocumentSourceRepository');
+      
       const source = await this.findById(id);
       if (!source) {
         throw new Error(`Document source with ID ${id} not found`);
@@ -313,6 +322,8 @@ export class FileSystemDocumentSourceRepository implements IDocumentSourceReposi
       
       // Save the updated source
       await this.save(source);
+      
+      logger.info(`Updated lastCrawledAt for source ${id}`, 'FileSystemDocumentSourceRepository');
     } catch (error: unknown) {
       throw new Error(`Failed to update lastCrawledAt: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -323,38 +334,37 @@ export class FileSystemDocumentSourceRepository implements IDocumentSourceReposi
    * @returns Promise resolving to array of all sources
    */
   private async loadAllSources(): Promise<DocumentSource[]> {
+    logger.info(`Loading all document sources from ${this.baseDir}`, 'FileSystemDocumentSourceRepository');
+    
     const sources: DocumentSource[] = [];
     
-    try {
-      // Check if base directory exists
-      try {
-        await fs.access(this.baseDir);
-      } catch {
-        // Base directory doesn't exist, return empty array
-        return [];
-      }
-      
-      // Read all files in the directory
-      const files = await fs.readdir(this.baseDir);
-      
-      // Process each JSON file
-      for (const file of files) {
-        if (file.endsWith('.json')) {
-          try {
-            const filePath = path.join(this.baseDir, file);
-            const content = await fs.readFile(filePath, 'utf-8');
-            const source = JSON.parse(content) as DocumentSource;
-            sources.push(source);
-          } catch (error: unknown) {
-            console.warn(`Error reading source file ${file}: ${error instanceof Error ? error.message : String(error)}`);
-          }
+    // Use existing index if available
+    if (this.index.size > 0) {
+      for (const id of this.index.getAllIds()) {
+        const source = this.index.getById(id);
+        if (source) {
+          sources.push(source);
         }
       }
       
-      return sources;
-    } catch (error: unknown) {
-      console.error(`Error loading all document sources: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
+      if (sources.length > 0) {
+        logger.info(`Loaded ${sources.length} sources from index`, 'FileSystemDocumentSourceRepository');
+        return sources;
+      }
     }
+    
+    // Rebuild the index if it's empty
+    await this.buildIndex();
+    
+    // Get sources from the rebuilt index
+    for (const id of this.index.getAllIds()) {
+      const source = this.index.getById(id);
+      if (source) {
+        sources.push(source);
+      }
+    }
+    
+    logger.info(`Loaded ${sources.length} sources`, 'FileSystemDocumentSourceRepository');
+    return sources;
   }
 }

@@ -3,7 +3,6 @@
  * Stores documents as JSON files in a directory structure
  */
 
-import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
 import {
@@ -13,13 +12,23 @@ import {
 import { Document } from '../../../shared/domain/models/Document.js';
 import { config } from '../config.js';
 import { extractUnifiedContent, UnifiedExtractionOptions } from '../UnifiedContentExtractor.js';
-import Fuse from 'fuse.js';
+import { getLogger } from '../logging.js';
+import { InMemoryDocumentIndex } from './document/DocumentIndex.js';
+import { DocumentCache } from './document/DocumentCache.js';
+import { DocumentFileStorage } from './document/DocumentFileStorage.js';
+import { DocumentSearch } from './document/DocumentSearch.js';
+
+const logger = getLogger();
 
 /**
  * File system-based document repository
  */
 export class FileSystemDocumentRepository implements IDocumentRepository {
   private baseDir: string;
+  private index: InMemoryDocumentIndex;
+  private cache: DocumentCache;
+  private storage: DocumentFileStorage;
+  private searchService: DocumentSearch;
   
   /**
    * Create a new file system document repository
@@ -27,40 +36,33 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    */
   constructor(baseDir?: string) {
     this.baseDir = baseDir || path.join(config.dataDir, 'documents');
+    
+    // Initialize components
+    this.index = new InMemoryDocumentIndex();
+    this.cache = new DocumentCache(100, 1000 * 60 * 30); // 100 docs, 30 minute TTL
+    this.storage = new DocumentFileStorage(this.baseDir);
+    this.searchService = new DocumentSearch();
+    
+    logger.info(`FileSystemDocumentRepository initialized with base directory: ${this.baseDir}`, 'FileSystemDocumentRepository');
   }
   
   /**
-   * Initialize the repository (create directories)
+   * Initialize the repository (create directories and build indices)
    */
   async initialize(): Promise<void> {
     try {
-      await fs.mkdir(this.baseDir, { recursive: true });
+      logger.info('Initializing document repository...', 'FileSystemDocumentRepository');
+      
+      // Initialize storage
+      await this.storage.initialize();
+      
+      // Build indices
+      await this.buildIndices();
+      
+      logger.info(`Document repository initialized. Indexed ${this.index.size} documents.`, 'FileSystemDocumentRepository');
     } catch (error: unknown) {
       throw new Error(`Failed to initialize document repository: ${error instanceof Error ? error.message : String(error)}`);
     }
-  }
-  
-  /**
-   * Get the file path for a document
-   * @param id Document ID
-   * @returns File path
-   */
-  private getFilePath(id: string): string {
-    // Use SHA-256 for consistent path structure and to avoid path traversal
-    const hash = createHash('sha256').update(id).digest('hex');
-    // Split the hash into directory levels to avoid too many files in one directory
-    const dir1 = hash.substring(0, 2);
-    const dir2 = hash.substring(2, 4);
-    
-    // Ensure path is within our base directory to prevent path traversal
-    const dirPath = path.join(this.baseDir, dir1, dir2);
-    
-    // Verify the path is still within our base directory
-    if (!path.normalize(dirPath).startsWith(path.normalize(this.baseDir))) {
-      throw new Error('Security error: attempted path traversal');
-    }
-    
-    return path.join(dirPath, `${hash}.json`);
   }
   
   /**
@@ -72,6 +74,38 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
     // Create a stable, URL-safe ID from the URL
     return createHash('sha256').update(url).digest('hex');
   }
+
+  /**
+   * Build indices for existing documents
+   * This creates in-memory maps from URL to file path and ID to file path
+   */
+  private async buildIndices(): Promise<void> {
+    logger.info('Building document indices...', 'FileSystemDocumentRepository');
+    
+    // Clear existing indices
+    this.index.clear();
+    
+    // Count of indexed documents
+    let count = 0;
+    
+    // Process each file in the document store
+    await this.storage.walkDirectory(async (filePath) => {
+      try {
+        // Read document metadata
+        const document = await this.storage.readDocument(filePath);
+        
+        // Add to indices
+        this.index.setPathForId(document.id, filePath);
+        this.index.setPathForUrl(document.url, filePath);
+        
+        count++;
+      } catch (error: unknown) {
+        logger.warn(`Error indexing document file ${filePath}: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository');
+      }
+    });
+    
+    logger.info(`Indexed ${count} documents.`, 'FileSystemDocumentRepository');
+  }
   
   /**
    * Find a document by its ID
@@ -80,55 +114,84 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    */
   async findById(id: string): Promise<Document | null> {
     try {
-      const filePath = this.getFilePath(id);
-      
-      // Check if the file exists
-      try {
-        await fs.access(filePath);
-      } catch {
-        return null;
-      }
-      
-      // Read and parse the file
-      const content = await fs.readFile(filePath, 'utf-8');
-      const document = JSON.parse(content) as Document;
-      
-      // Ensure the document has text content
-      if (!document.textContent && document.content) {
-        console.log(`Document ${document.id} has HTML content but no text content, extracting...`);
-        try {
-          // Extract text content from HTML content
-          const extractionOptions: UnifiedExtractionOptions = {
-            comprehensive: true,
-            debug: true
-          };
-          
-          const extractedContent = extractUnifiedContent(document.content, document.url, extractionOptions);
-          if (extractedContent.textContent) {
-            document.textContent = extractedContent.textContent;
-            console.log(`Extracted ${document.textContent.length} chars of text content, ${extractedContent.headings?.length || 0} headings, and ${extractedContent.codeBlocks?.length || 0} code blocks for ${document.id}`);
-            document.metadata = document.metadata || {};
-            Object.assign(document.metadata, extractedContent.metadata);
-            // Update the document with the extracted text content
-            await this.save(document);
-          }
-        } catch (error) {
-          console.warn(`Failed to extract text content for ${document.id}: ${error instanceof Error ? error.message : String(error)}`);
+      // Check if the document is in the cache
+      if (this.cache.has(id)) {
+        const cachedDoc = this.cache.get(id);
+        if (cachedDoc) {
+          logger.debug(`Cache hit for document ${id}`, 'FileSystemDocumentRepository');
+          return cachedDoc;
         }
       }
       
-      // Debug information about content
-      if (document.textContent) {
-        console.log(`Document ${document.id} has ${document.textContent.length} chars of text content`);
-      } else {
-        console.warn(`Document ${document.id} has no text content!`);
+      // Get file path from index or calculate it
+      let filePath = this.index.getPathById(id);
+      if (!filePath) {
+        // Not in index, calculate path
+        filePath = this.storage.getFilePath(id);
+        
+        // Check if the file exists before proceeding
+        if (!await this.storage.fileExists(filePath)) {
+          return null;
+        }
       }
+      
+      // Double-check file exists (in case index is stale)
+      if (!await this.storage.fileExists(filePath)) {
+        // File doesn't exist, remove from index
+        this.index.removeId(id);
+        return null;
+      }
+      
+      logger.debug(`Loading document ${id} from disk: ${filePath}`, 'FileSystemDocumentRepository');
+      
+      // Read document
+      const document = await this.storage.readDocument(filePath);
+      
+      // Ensure the document has text content
+      if (!document.textContent && document.content) {
+        await this.processDocumentContent(document);
+      }
+      
+      // Add to cache
+      this.cache.set(id, document);
       
       return document;
     } catch (error: unknown) {
       // Log error and return null (don't expose file system errors to clients)
-      console.error(`Error finding document by ID: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(`Error finding document by ID: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository');
       return null;
+    }
+  }
+  
+  /**
+   * Process document content to extract text
+   * @param document Document to process
+   */
+  private async processDocumentContent(document: Document): Promise<void> {
+    logger.info(`Processing content for document ${document.id}`, 'FileSystemDocumentRepository');
+    
+    try {
+      // Extract text content from HTML content
+      const extractionOptions: UnifiedExtractionOptions = {
+        comprehensive: true,
+        debug: true
+      };
+      
+      const extractedContent = extractUnifiedContent(document.content, document.url, extractionOptions);
+      
+      if (extractedContent.textContent) {
+        document.textContent = extractedContent.textContent;
+        logger.info(`Extracted ${document.textContent.length} chars of text content for ${document.id}`, 'FileSystemDocumentRepository');
+        
+        // Update document metadata
+        document.metadata = document.metadata || {};
+        Object.assign(document.metadata, extractedContent.metadata);
+        
+        // Save the updated document
+        await this.save(document);
+      }
+    } catch (error) {
+      logger.warn(`Failed to extract text content for ${document.id}: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository');
     }
   }
   
@@ -138,9 +201,27 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    * @returns Promise resolving to the document or null if not found
    */
   async findByUrl(url: string): Promise<Document | null> {
-    // Convert URL to ID and look up by ID
-    const id = this.urlToId(url);
-    return this.findById(id);
+    try {
+      // Check if URL is in the index
+      const filePath = this.index.getPathByUrl(url);
+      if (filePath) {
+        if (await this.storage.fileExists(filePath)) {
+          // Read file to get document ID
+          const document = await this.storage.readDocument(filePath);
+          return this.findById(document.id);
+        } else {
+          // File doesn't exist, remove from index
+          this.index.removeUrl(url);
+        }
+      }
+      
+      // Fall back to ID-based lookup
+      const id = this.urlToId(url);
+      return this.findById(id);
+    } catch (error) {
+      logger.error(`Error finding document by URL: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository');
+      return null;
+    }
   }
   
   /**
@@ -152,82 +233,55 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
     try {
       // Ensure document has proper content
       if (!document.textContent && document.content) {
-        console.log(`Document ${document.id} is missing text content, extracting from HTML...`);
-        try {
-          // Extract text content using our unified extractor
-          const extractionOptions: UnifiedExtractionOptions = {
-            comprehensive: true, // Enable all extraction features
-            debug: true // Enable detailed logging
-          };
-          
-          const extractedContent = extractUnifiedContent(document.content, document.url, extractionOptions);
-          
-          // Update document with extracted content
-          document.textContent = extractedContent.textContent;
-          
-          // Create metadata object if it doesn't exist
-          document.metadata = document.metadata || {};
-          
-          // Add extracted headings if available
-          if (extractedContent.headings && extractedContent.headings.length > 0) {
-            document.metadata.headings = extractedContent.headings;
-          }
-          
-          if (extractedContent.codeBlocks && extractedContent.codeBlocks.length > 0) {
-            document.metadata = document.metadata || {};
-            document.metadata.codeBlocks = extractedContent.codeBlocks;
-          }
-
-          
-// Add any other metadata from extraction
-          if (extractedContent.metadata) {
-            // Copy over any metadata that doesn't conflict
-            Object.entries(extractedContent.metadata).forEach(([key, value]) => {
-              // Skip title, we already have it
-              if (key !== 'title' && value && document.metadata) {
-                document.metadata[key] = value;
-              }
-            });
-          }
-          console.log(`Successfully extracted ${document.textContent.length} chars of text content for ${document.id}`);
-        } catch (error) {
-          console.warn(`Error extracting text content: ${error instanceof Error ? error.message : String(error)}`);
-        }
+        await this.processDocumentContent(document);
       }
       
-      console.log(`Saving document: ${document.title} (${document.id})`);
+      logger.info(`Saving document: ${document.title} (${document.id})`, 'FileSystemDocumentRepository');
       
-      const filePath = this.getFilePath(document.id);
-      const dirPath = path.dirname(filePath);
+      // Get file path
+      const filePath = this.storage.getFilePath(document.id);
       
-      // Ensure directory exists
-      await fs.mkdir(dirPath, { recursive: true });
+      // Update indices
+      this.index.setPathForId(document.id, filePath);
+      this.index.setPathForUrl(document.url, filePath);
       
-      // Validate document before saving
-      if (!document.textContent || document.textContent.trim().length === 0) {
-        console.warn(`Document ${document.id} has no text content!`);
-        
-        // If we can't extract text content but have html content, use a placeholder
-        if (document.content && document.content.length > 0) {
-          console.log(`Using placeholder text content for ${document.id}`);
-          document.textContent = `[Content available but not extracted: ${document.title}]`;
-        } else {
-          // No content at all
-          console.warn(`Document ${document.id} has no HTML content either!`);
-          document.textContent = `[No content available: ${document.title}]`;
-        }
-      }
+      // Ensure document has text content
+      this.validateDocumentContent(document);
       
       // Write document to file
-      await fs.writeFile(filePath, JSON.stringify(document, null, 2), 'utf-8');
+      await this.storage.writeDocument(filePath, document);
       
-      // Update index (this could be optimized in a real implementation)
-      await this.updateIndex();
+      // Update cache
+      this.cache.set(document.id, document);
       
-      console.log(`Document saved successfully: ${document.title}`);
+      logger.info(`Document saved successfully: ${document.title} (${document.id})`, 'FileSystemDocumentRepository');
     } catch (error: unknown) {
-      console.error(`Failed to save document: ${error instanceof Error ? error.message : String(error)}`);
+      // Remove from indices on error to force reload
+      if (document && document.id) {
+        this.index.removeId(document.id);
+      }
+      logger.error(`Failed to save document: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository');
       throw new Error(`Failed to save document: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  
+  /**
+   * Validate document content and add placeholder if needed
+   * @param document Document to validate
+   */
+  private validateDocumentContent(document: Document): void {
+    if (!document.textContent || document.textContent.trim().length === 0) {
+      logger.warn(`Document ${document.id} has no text content!`, 'FileSystemDocumentRepository');
+      
+      // If we can't extract text content but have html content, use a placeholder
+      if (document.content && document.content.length > 0) {
+        logger.info(`Using placeholder text content for ${document.id}`, 'FileSystemDocumentRepository');
+        document.textContent = `[Content available but not extracted: ${document.title}]`;
+      } else {
+        // No content at all
+        logger.warn(`Document ${document.id} has no HTML content either!`, 'FileSystemDocumentRepository');
+        document.textContent = `[No content available: ${document.title}]`;
+      }
     }
   }
   
@@ -238,38 +292,40 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    */
   async delete(id: string): Promise<boolean> {
     try {
-      const filePath = this.getFilePath(id);
+      // Get file path from index or calculate it
+      const filePath = this.index.getPathById(id) || this.storage.getFilePath(id);
       
       // Check if the file exists
-      try {
-        await fs.access(filePath);
-      } catch {
+      if (!await this.storage.fileExists(filePath)) {
         return false;
       }
       
+      // Get document to find URL (for index cleanup)
+      let documentUrl = '';
+      try {
+        const document = await this.storage.readDocument(filePath);
+        documentUrl = document.url;
+      } catch (error) {
+        logger.warn(`Error reading document before deletion: ${error}`, 'FileSystemDocumentRepository');
+      }
+      
       // Delete the file
-      await fs.unlink(filePath);
+      const result = await this.storage.deleteDocument(filePath);
       
-      // Update index
-      await this.updateIndex();
+      // Remove from indices
+      this.index.removeId(id);
+      if (documentUrl) {
+        this.index.removeUrl(documentUrl);
+      }
       
-      return true;
+      // Remove from cache
+      this.cache.delete(id);
+      
+      return result;
     } catch (error: unknown) {
-      console.error(`Error deleting document: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(`Error deleting document: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository');
       return false;
     }
-  }
-  
-  /**
-   * Update the search index
-   * This is a simple implementation that would be replaced with something more
-   * efficient in a production system
-   */
-  private async updateIndex(): Promise<void> {
-    // In a real implementation, we would update a persistent index
-    // For now, we'll just ensure the index directory exists
-    const indexDir = path.join(this.baseDir, 'index');
-    await fs.mkdir(indexDir, { recursive: true });
   }
   
   /**
@@ -279,104 +335,36 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    */
   async search(query: DocumentSearchQuery): Promise<Document[]> {
     try {
-      console.log(`Search query received:`, JSON.stringify(query, null, 2));
+      logger.info(`Search query received: ${JSON.stringify(query, null, 2)}`, 'FileSystemDocumentRepository');
       
-      // In a real implementation, we would use a proper search index
-      // For this prototype, we'll load all documents and search in memory
+      // Load all documents
       const documents = await this.loadAllDocuments();
-      console.log(`Loaded ${documents.length} documents for search`);
       
-      // Filter by source IDs if provided
-      let filteredDocs = documents;
-      if (query.sourceIds && query.sourceIds.length > 0) {
-        console.log(`Filtering by source IDs:`, query.sourceIds);
-        filteredDocs = filteredDocs.filter(doc => 
-          query.sourceIds!.includes(doc.sourceId)
-        );
-        console.log(`After source filter: ${filteredDocs.length} documents`);
-      }
-      
-      // Filter by tags if provided
-      if (query.tags && query.tags.length > 0) {
-        console.log(`Filtering by tags:`, query.tags);
-        filteredDocs = filteredDocs.filter(doc => 
-          query.tags!.every(tag => doc.tags && doc.tags.includes(tag))
-        );
-        console.log(`After tag filter: ${filteredDocs.length} documents`);
-      }
-      
-      // Filter by indexed date if provided
-      if (query.indexedAfter) {
-        filteredDocs = filteredDocs.filter(doc => 
-          new Date(doc.indexedAt) >= query.indexedAfter!
-        );
-      }
-      
-      if (query.indexedBefore) {
-        filteredDocs = filteredDocs.filter(doc => 
-          new Date(doc.indexedAt) <= query.indexedBefore!
-        );
-      }
-      
-      // Text search if provided
-      if (query.text) {
-        console.log(`Searching for text: "${query.text}"`);
-        const fuse = new Fuse(filteredDocs, {
-          keys: [
-            { name: 'title', weight: 2 }, // Title is twice as important
-            { name: 'textContent', weight: 1 },
-            { name: 'metadata.description', weight: 1.5 } // Description is also important
-          ],
-          includeScore: true,
-          // Lower threshold means more strict matching
-          // 0.0 = perfect match, 1.0 = anything matches
-          threshold: 0.4, 
-          // Include matches information so we can highlight relevant sections
-          includeMatches: true,
-          ignoreLocation: true
-        });
-        
-        const results = fuse.search(query.text);
-        console.log(`Fuse search returned ${results.length} results`);
-        
-        // Log the top results for debugging
-        if (results.length > 0) {
-          results.slice(0, 3).forEach((result, index) => {
-            console.log(`Result ${index+1}: "${result.item.title}" (score: ${result.score || 'unknown'})`);
-            
-            // Add match information to the document
-            // This can be used by the client to highlight relevant sections
-            if (result.matches) {
-              // Find text content matches
-              const textMatches = result.matches.filter(match => match.key === 'textContent');
-              if (textMatches.length > 0 && textMatches[0].indices.length > 0) {
-                // Add content snippet to document metadata for retrieval
-                result.item.metadata = result.item.metadata || {};
-                result.item.metadata.searchSnippets = extractSnippets(result.item.textContent, textMatches[0].indices, 150);
-              }
-            }
-          });
-        }
-        
-        filteredDocs = results.map(result => result.item);
-      }
-      
-      // Apply pagination
-      let result = filteredDocs;
-      if (query.offset) {
-        result = result.slice(query.offset);
-      }
-      
-      if (query.limit) {
-        result = result.slice(0, query.limit);
-      }
-      
-      console.log(`Returning ${result.length} search results`);
-      return result;
+      // Perform search
+      return this.searchService.executeSearch(documents, query);
     } catch (error: unknown) {
-      console.error(`Error searching documents: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(`Error searching documents: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository');
       return [];
     }
+  }
+  
+  /**
+   * Load all documents from the file system
+   * @returns Promise resolving to array of all documents
+   */
+  private async loadAllDocuments(): Promise<Document[]> {
+    logger.info(`Loading all documents from ${this.baseDir}`, 'FileSystemDocumentRepository');
+    
+    const documents: Document[] = [];
+    const allIds = this.index.getAllIds();
+    
+    // Load all documents using their IDs
+    const loadPromises = allIds.map(id => 
+      this.findById(id).catch(() => null)
+    );
+    
+    const loadedDocs = await Promise.all(loadPromises);
+    return loadedDocs.filter(Boolean) as Document[];
   }
   
   /**
@@ -416,7 +404,7 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    */
   async count(query?: DocumentSearchQuery): Promise<number> {
     if (!query) {
-      return this.countAllDocuments();
+      return this.index.size;
     }
     
     const documents = await this.search({
@@ -429,85 +417,7 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
   }
   
   /**
-   * Count all documents in the repository
-   * @returns Promise resolving to the count
-   */
-  private async countAllDocuments(): Promise<number> {
-    try {
-      const documents = await this.loadAllDocuments();
-      return documents.length;
-    } catch (error: unknown) {
-      console.error(`Error counting documents: ${error instanceof Error ? error.message : String(error)}`);
-      return 0;
-    }
-  }
-  
-  /**
-   * Load all documents from the file system
-   * In a real implementation, this would be replaced with a more efficient approach
-   * @returns Promise resolving to array of all documents
-   */
-  private async loadAllDocuments(): Promise<Document[]> {
-    console.log(`Loading all documents from ${this.baseDir}`);
-    const documents: Document[] = [];
-    
-    // Walk through the directory structure
-    async function walkDir(dirPath: string): Promise<void> {
-      let entries;
-      try {
-        entries = await fs.readdir(dirPath, { withFileTypes: true });
-      } catch (error) {
-        console.error(`Error reading directory ${dirPath}:`, error);
-        return;
-      }
-      
-      for (const entry of entries) {
-        const fullPath = path.join(dirPath, entry.name);
-        
-        if (entry.isDirectory()) {
-          // Skip index directory
-          if (entry.name === 'index') continue;
-          
-          // Recursively walk subdirectories
-          await walkDir(fullPath);
-        } else if (entry.isFile() && entry.name.endsWith('.json')) {
-          // Read and parse JSON file
-          try {
-            const content = await fs.readFile(fullPath, 'utf-8');
-            const document = JSON.parse(content) as Document;
-            documents.push(document);
-            console.log(`Loaded document: ${document.title}`);
-          } catch (error: unknown) {
-            console.warn(`Error reading document file ${fullPath}: ${error instanceof Error ? error.message : String(error)}`);
-          }
-        }
-      }
-    }
-    
-    try {
-      // Check if base directory exists
-      try {
-        await fs.access(this.baseDir);
-      } catch {
-        console.log(`Base directory ${this.baseDir} does not exist`);
-        // Base directory doesn't exist, return empty array
-        return [];
-      }
-      
-      // Walk the directory structure
-      await walkDir(this.baseDir);
-      console.log(`Found ${documents.length} documents in repository`);
-      
-      return documents;
-    } catch (error: unknown) {
-      console.error(`Error loading all documents: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
-    }
-  }
-  
-  /**
    * Get a document with content snippet by ID
-   * This is useful for displaying preview snippets in search results
    * @param id Document ID
    * @returns Promise resolving to document with content snippet or null
    */
@@ -524,24 +434,4 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
       textContent: document.textContent?.substring(0, 500) + '...'
     };
   }
-}
-
-/**
- * Extract text snippets from content based on match indices
- * @param text Full text content
- * @param matches Array of index pairs from Fuse.js
- * @param snippetLength Maximum length of each snippet
- * @returns Array of snippets
- */
-function extractSnippets(text: string, matches: ReadonlyArray<ReadonlyArray<number>>, snippetLength: number): string[] {
-  if (!text) return [];
-
-  return matches.slice(0, 3).map(([start, end]) => {
-    // Calculate snippet boundaries with context
-    const snippetStart = Math.max(0, start - snippetLength / 2);
-    const snippetEnd = Math.min(text.length, end + snippetLength / 2);
-    
-    // Extract snippet
-    return text.substring(Math.floor(snippetStart), Math.ceil(snippetEnd)) + '...';
-  });
 }

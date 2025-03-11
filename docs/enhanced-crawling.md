@@ -1,98 +1,221 @@
-# Enhanced Documentation Crawling
+# Enhanced Crawling Architecture
 
-The enhanced version of DocIndex includes powerful crawling capabilities to index entire documentation sites. This guide explains how to use these features effectively.
+This document outlines the improvements made to the DocSI crawler architecture, focusing on depth handling, sitemap processing, and URL prioritization.
 
-## How Crawling Works
+## Overview
 
-When you add a documentation source using the enhanced version, DocIndex will:
+The enhanced crawler architecture addresses several limitations in the original implementation:
 
-1. Start at the provided URL
-2. Extract content from the page (headings, paragraphs, code blocks)
-3. Find all links on the page
-4. Follow links that are on the same domain, up to the specified depth
-5. Index each page and store it locally
-6. Create a searchable index of all content
+1. **Improved Depth Handling**: Better handling of different documentation structures and more consistent depth calculation
+2. **Advanced Sitemap Processing**: Smarter processing of sitemap indexes and prioritization of URLs
+3. **Intelligent URL Prioritization**: Context-aware scoring of URLs for more effective crawling
+4. **Large Documentation Site Support**: Special handling for very large documentation sites
 
-## Using the Enhanced CLI
+## Architecture Components
 
-The enhanced version is available through the `docindex-enhanced` command:
+The enhanced crawler introduces several new components:
+
+![Enhanced Crawler Architecture](../assets/enhanced-crawler-architecture.png)
+
+### Core Components
+
+- **EnhancedCrawlerService**: Orchestrates the crawling process with improved capabilities
+- **AdvancedCrawlerEngine**: Powers the crawling with better depth handling and prioritization
+- **EnhancedSitemapProcessor**: Provides improved sitemap discovery and processing
+
+### Sitemap Processing Components
+
+- **SitemapParser**: Parses XML and JSON sitemaps with improved sitemap index support
+- **SitemapScorer**: Scores URLs based on multiple factors for prioritization
+- **SitemapTypes**: Provides comprehensive type definitions for sitemap processing
+
+## Key Improvements
+
+### 1. Depth Handling Modes
+
+The crawler now supports three depth handling modes:
+
+- **Strict**: Traditional counting of URL segments from the base URL
+- **Flexible**: Content-aware depth assignment based on URL structure
+- **Adaptive**: Dynamic depth adjustment based on site structure and crawling progress
+
+```typescript
+// Example configuration
+const config: AdvancedCrawlerConfig = {
+  maxDepth: 5,
+  depthHandlingMode: 'adaptive',
+  // other options...
+};
+```
+
+### 2. Sitemap Processing
+
+The enhanced sitemap processing pipeline includes:
+
+1. **Sitemap Discovery**: Finds sitemaps through robots.txt and common locations
+2. **Sitemap Classification**: Detects sitemap indexes and processes them accordingly
+3. **URL Extraction**: Extracts URLs and metadata from various sitemap formats
+4. **Depth Assignment**: Intelligently assigns depth values based on URL structure
+5. **Prioritization**: Scores URLs for optimal crawling order
+
+```typescript
+// Example sitemap processing options
+const sitemapOptions: SitemapProcessingOptions = {
+  followSitemapIndex: true,
+  maxEntries: 1000,
+  assignCustomDepth: true,
+  depthCalculationMethod: 'hybrid',
+  docPathMarkers: ['docs', 'documentation', 'guide'],
+  apiPathMarkers: ['api', 'reference']
+};
+```
+
+### 3. URL Prioritization
+
+URLs are scored using multiple factors:
+
+- **Path Structure**: Shorter paths are generally higher priority
+- **Content Type Indicators**: Documentation and API paths are prioritized
+- **Sitemap Metadata**: Uses priority and lastmod values from sitemaps
+- **Pattern Matching**: Boosts scores for URLs matching specific patterns
+
+```typescript
+// Example prioritization configuration
+const config: AdvancedCrawlerConfig = {
+  // other options...
+  strategy: 'hybrid',
+  prioritizationPatterns: [
+    'getting-started',
+    'tutorial',
+    'quickstart',
+    'api/.*',
+    'reference/.*'
+  ]
+};
+```
+
+### 4. Large Documentation Site Handling
+
+For large documentation sites, the crawler implements special handling:
+
+- **Section-Based Crawling**: Organizes URLs by section and ensures balanced coverage
+- **Adaptive Limits**: Dynamically adjusts limits based on site size
+- **Progressive Depth**: Starts with lower depths and gradually increases
+
+```typescript
+// Example large site handling configuration
+const config: AdvancedCrawlerConfig = {
+  // other options...
+  largeDocSiteOptions: {
+    detectLargeSites: true,
+    largeSiteThreshold: 500,
+    maxUrlsPerSection: 50
+  }
+};
+```
+
+## Using the Enhanced Crawler
+
+### Integration
+
+You can integrate the enhanced crawler components in several ways:
+
+1. **Direct Integration**: Use the `enhance-crawler.js` utility script
 
 ```bash
-docindex-enhanced add --url https://developers.google.com/maps/documentation --name "Google Maps" --depth 3 --pages 100
+# Run the enhancement script
+node tools/enhance-crawler.js
 ```
 
-### Crawling Parameters
+2. **Programmatic Integration**: Use the integration utilities in your code
 
-- `--depth <number>`: Controls how many links deep the crawler will go from the starting URL. Default is 3.
-  - Depth 1: Only the starting page
-  - Depth 2: Starting page + directly linked pages
-  - Depth 3: Starting page + directly linked pages + pages linked from those
+```typescript
+import { createEnhancedCrawlerService } from './interfaces/mcp/enhanced-integration.js';
 
-- `--pages <number>`: Maximum number of pages to crawl. Default is 100.
-  - This prevents crawling too many pages from large documentation sites
-  - Increase this for more comprehensive coverage
-
-## Rate Limiting
-
-The crawler includes a 1-second delay between requests to be respectful of documentation sites. This helps prevent overloading servers and getting your IP blocked.
-
-## Storage Structure
-
-Indexed documentation is stored in a structured format:
-
-```
-~/.docindex/data/
-  └── [source-id]/
-      ├── index.json         # Metadata about the source and all indexed pages
-      ├── [page-id-1].json   # Content from page 1
-      ├── [page-id-2].json   # Content from page 2
-      └── ...
+// Create an enhanced crawler service
+const crawlerService = createEnhancedCrawlerService(
+  documentRepository,
+  sourceRepository
+);
 ```
 
-## Example: Indexing Google Maps Documentation
+### Configuration Options
 
-```javascript
-const { addDocumentationSource } = require('docindex');
+The enhanced crawler supports numerous configuration options:
 
-async function indexGoogleMaps() {
-  const source = await addDocumentationSource(
-    'https://developers.google.com/maps/documentation',
-    'Google Maps',
-    ['maps', 'google', 'api'],
-    2,  // depth
-    50  // max pages
-  );
+```typescript
+// Example detailed configuration
+const config: AdvancedCrawlerConfig = {
+  // Core settings
+  maxDepth: 5,
+  maxPages: 1000,
+  force: false,
   
-  console.log(`Indexed ${source.pageCount} pages`);
-}
+  // Enhanced features
+  useSitemaps: true,
+  maxRetries: 3,
+  
+  // Timing settings
+  crawlDelay: 100,
+  
+  // Crawl strategy
+  strategy: 'hybrid',
+  prioritizationPatterns: ['docs', 'api'],
+  concurrency: 2,
+  
+  // Advanced depth handling
+  depthHandlingMode: 'adaptive',
+  
+  // URL filtering
+  includePatterns: ['^/docs', '^/api'],
+  excludePatterns: ['\.pdf$', '/assets/'],
+  
+  // Entry points
+  entryPoints: [
+    'https://example.com/docs/getting-started',
+    'https://example.com/api/reference'
+  ],
+  
+  // Large site handling
+  largeDocSiteOptions: {
+    detectLargeSites: true,
+    largeSiteThreshold: 500,
+    maxUrlsPerSection: 50
+  },
+  
+  // Sitemap options
+  sitemapOptions: {
+    followSitemapIndex: true,
+    maxEntries: 1000,
+    assignCustomDepth: true,
+    depthCalculationMethod: 'hybrid',
+    docPathMarkers: ['docs', 'guide', 'tutorial'],
+    apiPathMarkers: ['api', 'reference']
+  },
+  
+  // Debug mode
+  debug: false
+};
 ```
 
-## Searching Indexed Documentation
+## Performance Considerations
 
-The enhanced search looks through all indexed pages:
+The enhanced crawler includes several performance optimizations:
 
-```bash
-docindex-enhanced search "navigation"
-```
+1. **Batch Processing**: Processes URLs in batches for better memory management
+2. **Smart Retries**: Uses exponential backoff for failed requests
+3. **Progressive Crawling**: Prioritizes important content first
+4. **Resource Limits**: Adjusts concurrency and delays based on server response
 
-Search results include:
-- The source name and URL
-- Each matching page with its title and URL
-- Matching headings from each page
-- Snippets of matching content with context
-- Matching code blocks
+## Future Enhancements
 
-## Best Practices
+Planned future enhancements include:
 
-1. **Start with smaller depths and page limits** to test before doing a full crawl
-2. **Be specific with your starting URL** - start at a section of documentation rather than the root
-3. **Use meaningful tags** to help with searching later
-4. **Be respectful** of documentation sites - don't crawl too frequently
-5. **Update periodically** to keep your local index current
+1. **Machine Learning Prioritization**: Using ML to predict URL importance
+2. **Content Quality Scoring**: Evaluating content quality for better prioritization
+3. **Headless Browser Support**: Adding support for JavaScript-rendered sites
+4. **Distributed Crawling**: Support for distributed crawling of very large sites
 
-## Troubleshooting
+## Conclusion
 
-- If crawling stops unexpectedly, try reducing the depth or page limit
-- Some sites may block crawling - check if the site has a robots.txt file
-- JavaScript-heavy sites may not render all content in the initial HTML
-- If you encounter rate limiting, the tool will automatically retry with increased delays
+The enhanced crawler architecture significantly improves DocSI's ability to handle complex documentation sites, especially those with deep hierarchies or large numbers of pages. By implementing smart depth handling, improved sitemap processing, and intelligent URL prioritization, the crawler can more effectively index documentation while respecting resource constraints.
