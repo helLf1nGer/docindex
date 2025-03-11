@@ -40,8 +40,11 @@ interface BatchCrawlArgs {
   /** Use sitemap discovery for finding URLs (default: true) */
   useSitemaps?: boolean;
   
-  /** Number of retry attempts for failed requests (default: 3) */
+  /** Maximum number of retry attempts for failed requests (default: 3) */
   maxRetries?: number;
+  
+  /** Force crawling even if document exists (default: false) */
+  force?: boolean;
   
   /** Enable debug mode for verbose logging (default: true) */
   debug?: boolean;
@@ -97,6 +100,7 @@ interface BackgroundJob {
     prioritize: string[];
     useSitemaps: boolean;
     maxRetries: number;
+    force: boolean;
     debug: boolean;
   };
 }
@@ -198,6 +202,11 @@ export class BatchCrawlToolHandler extends BaseToolHandler {
               description: 'Maximum number of retry attempts for failed requests (default: 3).',
               default: 3
             },
+            force: {
+              type: 'boolean',
+              description: 'Force crawling even if document exists (default: false). When true, documents that already exist in storage will be recrawled.',
+              default: false
+            },
             debug: {
               type: 'boolean',
               description: 'Enable debug mode for verbose logging (default: true).',
@@ -260,6 +269,7 @@ export class BatchCrawlToolHandler extends BaseToolHandler {
       const timeout = args.timeout || 30;
       const useSitemaps = args.useSitemaps !== false; // Default to true
       const maxRetries = args.maxRetries || 3;
+      const force = args.force || false; // Default to false
       const debug = args.debug !== false; // Default to true
       
       // Find sources to crawl
@@ -304,6 +314,7 @@ export class BatchCrawlToolHandler extends BaseToolHandler {
           prioritize,
           useSitemaps,
           maxRetries,
+          force,
           debug
         }
       };
@@ -343,6 +354,7 @@ Configuration:
   - Concurrency: ${concurrency}
   - Prioritized patterns: ${prioritize.length > 0 ? prioritize.join(', ') : 'none'}
   - Use sitemaps: ${useSitemaps ? 'Yes' : 'No'}
+  - Force recrawl: ${force ? 'Yes' : 'No'}
   - Max retries: ${maxRetries}
   - Debug mode: ${debug ? 'Enabled' : 'Disabled'}
 
@@ -445,6 +457,7 @@ Configuration:
   - Concurrency: ${job.config.concurrency}
   - Prioritized patterns: ${job.config.prioritize.length > 0 ? job.config.prioritize.join(', ') : 'none'}
   - Use sitemaps: ${job.config.useSitemaps ? 'Yes' : 'No'}
+  - Force recrawl: ${job.config.force ? 'Yes' : 'No'}
   - Max retries: ${job.config.maxRetries}
   - Debug mode: ${job.config.debug ? 'Enabled' : 'Disabled'}
 
@@ -478,6 +491,7 @@ ${jobStatuses.map(js => `- ${js.sourceName}: ${js.status}, Crawled: ${js.progres
       prioritize: string[],
       useSitemaps: boolean,
       maxRetries: number,
+      force: boolean,
       debug: boolean
     }
   ): Promise<void> {
@@ -509,6 +523,7 @@ ${jobStatuses.map(js => `- ${js.sourceName}: ${js.status}, Crawled: ${js.progres
             },
             useSitemaps: config.useSitemaps,
             maxRetries: config.maxRetries,
+            force: config.force,
             debug: config.debug
           };
           
