@@ -12,6 +12,12 @@ import { IDocumentSourceRepository } from '../../../shared/domain/repositories/D
 import { IDocumentRepository } from '../../../shared/domain/repositories/DocumentRepository.js';
 import { ICrawlerService, CrawlJobSettings, JobStatusType } from '../../../services/crawler/domain/CrawlerService.js';
 
+// Redirect all console.log to console.error to avoid breaking MCP protocol
+const originalConsoleLog = console.log;
+console.log = function(...args: any[]) {
+  console.error(...args);
+};
+
 /**
  * Handler for the docsi-discover tool
  */
@@ -147,7 +153,7 @@ export class DiscoverToolHandler extends BaseToolHandler {
           
           lastCrawledText = lastCrawledDate.toISOString();
         } catch (error) {
-          console.warn(`Error formatting date for source ${s.name}:`, error);
+          // Ignore formatting errors
         }
       }
       
@@ -252,7 +258,7 @@ export class DiscoverToolHandler extends BaseToolHandler {
           maxDepthReached = jobStatus.progress.maxDepthReached;
         }
       } catch (error) {
-        console.error('Error starting or monitoring crawl job:', error);
+        // Ignore crawl job errors
       }
     }
     
@@ -353,7 +359,7 @@ Crawled ${pageCount} pages${pagesDiscovered > 0 ? `\nDiscovered ${pagesDiscovere
           maxDepthReached = jobStatus.progress.maxDepthReached;
         }
       } catch (error) {
-        console.error('Error starting or monitoring crawl job:', error);
+        // Ignore crawl job errors
       }
     }
     

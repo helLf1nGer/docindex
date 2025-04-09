@@ -16,6 +16,12 @@ import { SimpleContentExtractor, ExtractedContent } from './SimpleContentExtract
 // Importing from shared domain to maintain compatibility
 import { Document } from '../../shared/domain/models/Document.js';
 
+// Redirect all console.log to console.error to avoid breaking MCP protocol
+const originalConsoleLog = console.log;
+console.log = function(...args: any[]) {
+  console.error(...args);
+};
+
 export interface CrawlOptions {
   /** Base URL to start crawling from */
   baseUrl: string;
@@ -162,7 +168,6 @@ export class SimpleCrawler extends EventEmitter {
    * Start the crawling process
    */
   async start(): Promise<CrawlStatus> {
-    console.log(`Starting crawl of ${this.options.baseUrl} with max depth ${this.options.maxDepth}`);
     this.status.startTime = new Date();
     this.emit('start', { url: this.options.baseUrl, options: this.options });
     
@@ -185,9 +190,6 @@ export class SimpleCrawler extends EventEmitter {
     // Calculate duration
     const duration = (this.status.endTime.getTime() - this.status.startTime.getTime()) / 1000;
     
-    console.log(`Crawl completed. Processed ${this.status.processed} pages in ${duration.toFixed(2)}s`);
-    console.log(`Succeeded: ${this.status.succeeded}, Failed: ${this.status.failed}, Skipped: ${this.status.skipped}`);
-    
     this.emit('complete', this.status);
     return this.status;
   }
@@ -196,7 +198,6 @@ export class SimpleCrawler extends EventEmitter {
    * Stop the crawling process
    */
   stop(): void {
-    console.log('Stopping crawler...');
     this.shouldStop = true;
     this.emit('stop');
   }
@@ -245,7 +246,6 @@ export class SimpleCrawler extends EventEmitter {
       
       // Process URL
       this.processSingleUrl(nextUrl).catch(error => {
-        console.error(`Error processing ${nextUrl.url}:`, error);
         this.status.failed++;
       }).finally(() => {
         // Remove from processing and decrease active requests
@@ -273,18 +273,14 @@ export class SimpleCrawler extends EventEmitter {
     this.status.currentUrl = url;
     
     try {
-      console.log(`Processing ${url} (depth: ${depth})`);
       this.emit('processing', { url, depth, parentUrl });
       
       // Check if already in storage
       const exists = await this.documentStorage.documentExists(url);
       if (exists && !this.options.force) {
-        console.log(`Document already exists for ${url}, skipping`);
-        this.status.skipped++;
         this.visitedUrls.add(processedUrl.normalizedUrl);
         return;
       } else if (exists && this.options.force) {
-        console.log(`Document exists for ${url}, but force flag is set - recrawling`);
       }
       
       // Fetch the URL
@@ -298,7 +294,6 @@ export class SimpleCrawler extends EventEmitter {
       // Extract content
       const extractedContent = this.contentExtractor.extract(html, url);
       if (!extractedContent) {
-        console.warn(`Failed to extract content from ${url}`);
         this.status.failed++;
         return;
       }
@@ -310,7 +305,6 @@ export class SimpleCrawler extends EventEmitter {
       // Extract URLs from HTML if not at max depth
       if (depth < this.options.maxDepth) {
         const extractedUrls = this.urlProcessor.extractUrlsFromHtml(html, url, depth);
-        console.log(`Found ${extractedUrls.length} URLs in ${url}`);
         
         // Add to queue
         for (const extractedUrl of extractedUrls) {
@@ -324,7 +318,6 @@ export class SimpleCrawler extends EventEmitter {
       
       this.emit('processed', { url, depth, success: true });
     } catch (error) {
-      console.error(`Error processing ${url}:`, error);
       this.status.failed++;
       this.emit('processed', { url, depth, success: false, error });
     }
@@ -339,7 +332,6 @@ export class SimpleCrawler extends EventEmitter {
     } catch (error) {
       if (retryCount < this.options.maxRetries) {
         const delay = Math.pow(2, retryCount) * 1000; // Exponential backoff
-        console.log(`Retrying ${url} after ${delay}ms (attempt ${retryCount + 1}/${this.options.maxRetries})`);
         await this.sleep(delay);
         return this.fetchWithRetry(url, retryCount + 1);
       }

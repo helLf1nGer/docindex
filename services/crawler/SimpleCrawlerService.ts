@@ -19,6 +19,12 @@ import { IDocumentRepository } from '../../shared/domain/repositories/DocumentRe
 import { IDocumentSourceRepository } from '../../shared/domain/repositories/DocumentSourceRepository.js';
 import { Document, DocumentSource } from '../../shared/domain/models/Document.js';
 
+// Redirect all console.log to console.error to avoid breaking MCP protocol
+const originalConsoleLog = console.log;
+console.log = function(...args: any[]) {
+  console.error(...args);
+};
+
 /**
  * Simple in-memory document storage implementation that adapts DocumentRepository
  */
@@ -286,9 +292,6 @@ export class SimpleCrawlerService implements ICrawlerService {
       // Update source lastCrawledAt
       source.lastCrawledAt = new Date();
       await this.sourceRepository.save(source);
-      
-      console.log(`Crawl job ${jobId} completed: ${result.succeeded} pages crawled, ` +
-                  `${result.discovered} discovered`);
       
     } catch (error) {
       // Update job status

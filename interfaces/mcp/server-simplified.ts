@@ -14,6 +14,12 @@ import {
 import path from 'path';
 import os from 'os';
 
+// Redirect all console.log to console.error to avoid breaking MCP protocol
+const originalConsoleLog = console.log;
+console.log = function(...args: any[]) {
+  console.error(...args);
+};
+
 // Import handlers
 import { CheckToolHandler } from './handlers/check-tool-handler.js';
 import { InfoToolHandler } from './handlers/info-tool-handler.js';
@@ -244,7 +250,6 @@ class DocSISimplifiedServer {
 }
 
 // Create and start server
-console.log('Starting DocSI MCP server with simplified crawler implementation...');
 const server = new DocSISimplifiedServer();
 server.start().catch((error) => {
   logger.error('Failed to start server:', error);

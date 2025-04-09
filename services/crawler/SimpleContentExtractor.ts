@@ -167,7 +167,6 @@ export class SimpleContentExtractor {
       
       // Final validation
       if (mainContent.length < this.minContentLength) {
-        console.warn(`Extracted content from ${url} is too short: ${mainContent.length} chars`);
         return null;
       }
       
@@ -179,7 +178,6 @@ export class SimpleContentExtractor {
         codeBlocks: codeBlocks.length > 0 ? codeBlocks : undefined
       };
     } catch (error) {
-      console.error(`Error extracting content from ${url}:`, error);
       return null;
     }
   }

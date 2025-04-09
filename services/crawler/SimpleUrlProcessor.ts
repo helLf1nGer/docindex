@@ -66,7 +66,6 @@ export class SimpleUrlProcessor {
       
       return normalizedUrl.href;
     } catch (error) {
-      console.error(`Error normalizing URL ${url}:`, error);
       return '';
     }
   }
@@ -87,7 +86,6 @@ export class SimpleUrlProcessor {
       // For deduplication, we consider http and https as the same
       return `${parsedUrl.hostname}${pathname}${parsedUrl.search}`;
     } catch (error) {
-      console.error(`Error deduplicating URL ${url}:`, error);
       return '';
     }
   }
@@ -126,7 +124,6 @@ export class SimpleUrlProcessor {
       
       return true;
     } catch (error) {
-      console.error(`Error processing URL ${url}:`, error);
       return false;
     }
   }
@@ -148,7 +145,6 @@ export class SimpleUrlProcessor {
         parentUrl
       };
     } catch (error) {
-      console.error(`Error in processUrl ${url}:`, error);
       return null;
     }
   }
