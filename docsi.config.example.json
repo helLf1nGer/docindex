@@ -1,0 +1,35 @@
+{
+  "dataDir": "~/.docsi",
+  "logLevel": "info",
+  "maxConcurrentRequests": 5,
+  "crawler": {
+    "userAgent": "DocSI-Bot/1.0 (+https://docsi.io/bot)",
+    "maxDepth": 3,
+    "maxPages": 100,
+    "crawlDelay": 1000,
+    "respectRobotsTxt": true
+  },
+  "database": {
+    "type": "sqlite",
+    "connectionString": "~/.docsi/docsi.db"
+  },
+  "vectorDatabase": {
+    "type": "sqlite",
+    "connectionString": "~/.docsi/vectors.db",
+    "dimension": 384
+  },
+  "cache": {
+    "enabled": true,
+    "ttl": 3600,
+    "maxSize": 100
+  },
+  "mcp": {
+    "name": "docsi",
+    "version": "1.0.0"
+  },
+  "security": {
+    "encryptDocuments": false,
+    "maxPathDepth": 5,
+    "allowedHosts": ["*"]
+  }
+}

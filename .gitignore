@@ -36,3 +36,21 @@ build/
 # Logs
 logs/
 *.log
+
+# Database migrations
+alembic/
+alembic.ini
+
+# Test files and directories
+jest.config.cjs
+test-browser-crawler.js
+*.test.ts
+*.test.js
+**/test/
+services/scheduler/
+
+# Local data directory
+.docsi/
+
+# Utility scripts
+shared/utils/
