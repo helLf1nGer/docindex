@@ -7,9 +7,15 @@ import { BaseToolHandler, ToolDefinition } from './base-tool-handler.js';
 import { McpToolResponse } from '../tool-types.js';
 import { IDocumentRepository } from '../../../shared/domain/repositories/DocumentRepository.js';
 import { extractUnifiedContent } from '../../../shared/infrastructure/UnifiedContentExtractor.js';
-import { getLogger } from '../../../shared/infrastructure/logging.js';
+import { Logger, getLogger } from '../../../shared/infrastructure/logging.js'; // Import Logger
+import {
+  DocumentNotFoundError,
+  ValidationError,
+  McpHandlerError,
+  isDocsiError
+} from '../../../shared/domain/errors.js'; // Import custom errors
 
-const logger = getLogger();
+// Removed global logger instance
 
 /**
  * Arguments for the get-document tool
@@ -32,14 +38,19 @@ export interface GetDocumentArgs {
  * Handler for the docsi-get-document tool
  */
 export class GetDocumentHandler extends BaseToolHandler {
+  private logger: Logger; // Added logger property
+
   /**
    * Create a new get-document tool handler
    * @param documentRepository Repository for documents
+   * @param loggerInstance Optional logger instance
    */
   constructor(
-    private readonly documentRepository: IDocumentRepository
+    private readonly documentRepository: IDocumentRepository,
+    loggerInstance?: Logger // Added optional logger parameter
   ) {
     super();
+    this.logger = loggerInstance || getLogger(); // Use injected or global logger
   }
   
   /**
@@ -86,35 +97,49 @@ export class GetDocumentHandler extends BaseToolHandler {
    * @returns Tool response
    */
   async handleToolCall(name: string, args: any): Promise<McpToolResponse> {
+    this.logger.debug(`[GetDocumentHandler] Entering handleToolCall for tool: ${name}`, 'handleToolCall', { args });
     if (name !== 'docsi-get-document') {
-      return this.createErrorResponse(`Unknown tool: ${name}`);
+      // Use structured error for consistency, though this case is less likely if routing is correct
+      return this.createStructuredErrorResponse(new McpHandlerError(`Handler cannot process tool: ${name}`, name));
     }
     
     const typedArgs = args as unknown as GetDocumentArgs;
     const { url, id, includeHtml = false, forceExtract = false } = typedArgs;
     
     if (!url && !id) {
-      return this.createErrorResponse('Either URL or ID must be provided');
+      // Use ValidationError for input issues
+      const validationError = new ValidationError('Either URL or ID must be provided for docsi-get-document');
+      this.logger.error('Validation Error: Missing URL or ID', 'GetDocumentHandler.handleToolCall', validationError);
+      return this.createStructuredErrorResponse(validationError);
     }
     
     try {
-      logger.info(`Retrieving document: ${url || id}`, 'GetDocumentHandler');
+      this.logger.debug(`[GetDocumentHandler] Received args: url=${url}, id=${id}`, 'handleToolCall');
+      this.logger.debug(`[GetDocumentHandler] Attempting lookup with URL: ${url}`, 'handleToolCall');
+      this.logger.info(`Retrieving document: ${url || id}`, 'GetDocumentHandler.handleToolCall');
       
       // Find document by URL or ID
       let document;
       if (url) {
         document = await this.documentRepository.findByUrl(url);
+        this.logger.debug(`[GetDocumentHandler] Found document via URL lookup. ID: ${document?.id}`, 'handleToolCall');
       } else if (id) {
+        this.logger.debug(`[GetDocumentHandler] Attempting lookup with ID: ${id}`, 'handleToolCall');
         document = await this.documentRepository.findById(id);
+        this.logger.debug(`[GetDocumentHandler] Found document via ID lookup. ID: ${document?.id}`, 'handleToolCall');
       }
       
       if (!document) {
-        return this.createErrorResponse(`Document not found: ${url || id}`);
+        // Use specific DocumentNotFoundError
+        const notFoundError = new DocumentNotFoundError(url || id || 'unknown identifier');
+        this.logger.warn(`[GetDocumentHandler] Document lookup failed for identifier: ${url || id || 'unknown'}`, 'handleToolCall');
+        this.logger.error(`Document not found: ${url || id || 'unknown identifier'}`, 'GetDocumentHandler.handleToolCall', notFoundError);
+        return this.createStructuredErrorResponse(notFoundError);
       }
 
       // Check if we need to extract content
       if ((forceExtract || !document.textContent || document.textContent.trim().length === 0) && document.content) {
-        logger.info(`Extracting content for document: ${document.id}`, 'GetDocumentHandler');
+        this.logger.info(`Extracting content for document: ${document.id}`, 'GetDocumentHandler.handleToolCall');
         
         try {
           // Extract content using our unified extractor
@@ -135,11 +160,12 @@ export class GetDocumentHandler extends BaseToolHandler {
             await this.documentRepository.save(document);
           }
         } catch (error) {
-          logger.warn(`Error extracting content: ${error}`, 'GetDocumentHandler');
+          this.logger.warn(`Error extracting content for document ${document.id}: ${error}`, 'GetDocumentHandler.handleToolCall', error);
+          // Log the error but don't fail the request, return the document as is
         }
       }
       
-      logger.info(`Found document: ${document.title}`, 'GetDocumentHandler');
+      this.logger.info(`Found document: ${document.title} (ID: ${document.id})`, 'GetDocumentHandler.handleToolCall');
       
       // Format the response
       // Ensure updatedAt is a proper Date object or handle it as a string
@@ -152,6 +178,7 @@ export class GetDocumentHandler extends BaseToolHandler {
           try {
             updatedAtStr = new Date(document.updatedAt).toISOString();
           } catch (e) {
+            this.logger.warn(`Document ${document.id} has non-standard updatedAt format: ${typeof document.updatedAt}`, 'GetDocumentHandler.handleToolCall');
             updatedAtStr = String(document.updatedAt);
           }
         }
@@ -211,8 +238,9 @@ export class GetDocumentHandler extends BaseToolHandler {
         ]
       };
     } catch (error) {
-      logger.error(`Error retrieving document: ${url || id}`, 'GetDocumentHandler', error);
-      return this.createErrorResponse(error instanceof Error ? error.message : String(error));
+      this.logger.error(`Error retrieving document: ${url || id}`, 'GetDocumentHandler.handleToolCall', error);
+      // Use structured error response
+      return this.createStructuredErrorResponse(error);
     }
   }
 }

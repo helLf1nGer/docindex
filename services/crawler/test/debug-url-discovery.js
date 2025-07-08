@@ -67,7 +67,12 @@ async function runTest() {
   });
   
   const contentProcessor = new ContentProcessor();
-  const storageManager = new StorageManager(mockDocumentRepository);
+  const storageManager = new StorageManager(mockDocumentRepository, {
+    get modelName() { return ''; },
+    embedder: null,
+    init: async () => {},
+    generateEmbedding: async () => []
+  }, {});
   const urlProcessor = new UrlProcessor();
   
   // Create crawler engine with detailed logging

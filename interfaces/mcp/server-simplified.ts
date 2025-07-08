@@ -6,6 +6,13 @@
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { EventEmitter } from 'events';
+import { chromium, Browser } from 'playwright'; // Added Playwright imports
+import { EmbeddingService } from '../../shared/infrastructure/EmbeddingService.js';
+import { QdrantVectorRepository } from '../../shared/infrastructure/repositories/QdrantVectorRepository.js';
+import { SemanticSearch } from '../../shared/infrastructure/repositories/document/SemanticSearch.js';
+import { HybridSearch } from '../../shared/infrastructure/repositories/document/HybridSearch.js';
+import { DocumentSearch } from '../../shared/infrastructure/repositories/document/DocumentSearch.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
@@ -14,11 +21,7 @@ import {
 import path from 'path';
 import os from 'os';
 
-// Redirect all console.log to console.error to avoid breaking MCP protocol
-const originalConsoleLog = console.log;
-console.log = function(...args: any[]) {
-  console.error(...args);
-};
+// Removed console.log redirection hack
 
 // Import handlers
 import { CheckToolHandler } from './handlers/check-tool-handler.js';
@@ -29,7 +32,8 @@ import { GetDocumentHandler } from './handlers/get-document-handler.js';
 import { BatchCrawlToolHandler } from './handlers/batch-crawl-tool-handler.js';
 
 // Import services
-import { LoggerService } from './services/logger-service.js';
+// Removed incorrect LoggerService import
+import { Logger, getLogger } from '../../shared/infrastructure/logging.js'; // Import correct Logger
 import { ConfigService } from './services/config-service.js';
 
 // Import repositories
@@ -40,7 +44,7 @@ import { FileSystemDocumentSourceRepository } from '../../shared/infrastructure/
 import { SimpleCrawlerServiceProvider } from '../../services/crawler/infrastructure/SimpleCrawlerServiceProvider.js';
 
 // Initialize logger
-const logger = new LoggerService();
+const logger = getLogger(); // Use the correct logger factory
 
 /**
  * Main DocSI MCP server class using the simplified crawler
@@ -49,6 +53,9 @@ const logger = new LoggerService();
 class DocSISimplifiedServer {
   private server: Server;
   private configService: ConfigService;
+  private browser: Browser | null = null;
+  private documentRepository: FileSystemDocumentRepository; // Store repository instance
+  private documentSourceRepository: FileSystemDocumentSourceRepository; // Store repository instance
   
   // Tool handlers
   private checkToolHandler: CheckToolHandler;
@@ -79,11 +86,14 @@ class DocSISimplifiedServer {
     );
     
     // Initialize repositories
-    const documentRepository = new FileSystemDocumentRepository(
-      path.join(this.configService.get('dataDir'), 'documents')
+    // Pass the logger instance as the second argument
+    // Store repository instances as class properties
+    this.documentRepository = new FileSystemDocumentRepository(
+      path.join(this.configService.get('dataDir'), 'documents'),
+      logger // Added logger instance
     );
     
-    const documentSourceRepository = new FileSystemDocumentSourceRepository(
+    this.documentSourceRepository = new FileSystemDocumentSourceRepository(
       path.join(this.configService.get('dataDir'), 'sources')
     );
     
@@ -91,43 +101,76 @@ class DocSISimplifiedServer {
     this.checkToolHandler = new CheckToolHandler();
     this.infoToolHandler = new InfoToolHandler(this.configService);
     this.discoverToolHandler = new DiscoverToolHandler(
-      documentSourceRepository,
-      documentRepository
+      this.documentSourceRepository, // Use class property
+      this.documentRepository // Use class property
     );
-    this.searchToolHandler = new SearchToolHandler(documentRepository);
-    this.getDocumentHandler = new GetDocumentHandler(documentRepository);
+    // Initialize embedding and vector components
+    const embeddingService = new EmbeddingService();
+    const vectorRepo = new QdrantVectorRepository('http://localhost:6333');
+
+    // Initialize semantic search
+    const semanticSearch = new SemanticSearch(
+      embeddingService,
+      vectorRepo,
+      this.documentRepository // Use class property
+    );
+
+    // Initialize hybrid search
+    const documentSearch = this.documentRepository['searchService'] || new DocumentSearch(); // Use class property
+    const hybridSearch = new HybridSearch(
+      documentSearch,
+      semanticSearch,
+      this.documentRepository, // Use class property
+      logger // Pass the logger instance as the fourth argument
+    );
+
+    // Initialize search tool handler with new components
+    this.searchToolHandler = new SearchToolHandler(
+      this.documentRepository, // Use class property
+      semanticSearch,
+      hybridSearch
+    );
+    this.getDocumentHandler = new GetDocumentHandler(this.documentRepository); // Use class property
     this.batchCrawlToolHandler = new BatchCrawlToolHandler(
-      documentSourceRepository,
-      documentRepository
+      this.documentSourceRepository, // Use class property
+      this.documentRepository, // Use class property
+      new EventEmitter()
     );
     
     // Initialize error handler
     this.server.onerror = (error) => {
-      logger.error('[MCP Error]', error);
+      logger.logError(error instanceof Error ? error : new Error(String(error)), 'DocsiServer', '[MCP Error]');
     };
     
     // Initialize shutdown handler
     process.on('SIGINT', async () => {
+      logger.info('Received SIGINT. Shutting down...', 'DocsiServer');
+      if (this.browser) {
+        logger.info('Closing browser...', 'DocsiServer');
+        await this.browser.close();
+        logger.info('Browser closed.', 'DocsiServer');
+      }
       await this.server.close();
+      logger.info('MCP Server closed.', 'DocsiServer');
       process.exit(0);
     });
     
-    // Initialize the simplified crawler service and connect to handlers
-    this.initializeSimplifiedCrawlerService(documentRepository, documentSourceRepository);
+    // Defer crawler service initialization until browser is ready in start()
   }
   
   /**
    * Initialize the simplified crawler service and connect it to the handlers
    */
-  private initializeSimplifiedCrawlerService(
-    documentRepository: FileSystemDocumentRepository,
-    documentSourceRepository: FileSystemDocumentSourceRepository
-  ): void {
+  private async initializeSimplifiedCrawlerService( // Made async
+    // Removed parameters, will use class properties
+    browser: Browser // Added browser parameter
+  ): Promise<void> { // Return Promise
     try {
-      // Create and get the simplified crawler service instance
+      // Create and get the simplified crawler service instance, passing the browser
       const crawlerService = SimpleCrawlerServiceProvider.createService(
-        documentRepository,
-        documentSourceRepository
+        this.documentRepository, // Use class property
+        this.documentSourceRepository, // Use class property
+        browser // Pass browser instance
       );
       
       // Connect crawler service to handlers
@@ -153,10 +196,10 @@ class DocSISimplifiedServer {
         // logger.debug(`Crawl job completed: ${event.jobId} (pages: ${event.data.pagesCrawled})`);
       });
       
-      logger.info('Simplified crawler service initialized successfully');
+      logger.info('Simplified crawler service initialized successfully', 'DocsiServer');
     } catch (error: unknown) {
       // Only log errors - these are important enough to display
-      logger.error('Failed to initialize simplified crawler service:', error);
+      logger.logError(error instanceof Error ? error : new Error(String(error)), 'DocsiServer', 'Failed to initialize simplified crawler service');
     }
   }
   
@@ -234,16 +277,32 @@ class DocSISimplifiedServer {
    */
   public async start(): Promise<void> {
     try {
-      // Initialize handlers
+      logger.info('Launching browser...', 'DocsiServer');
+      this.browser = await chromium.launch({ headless: false, slowMo: 250 }); // Launch browser in headed mode with slowMo
+      logger.info('Browser launched successfully.', 'DocsiServer');
+
+      // Repositories are now initialized in the constructor and stored as class properties.
+      // Remove redundant creation here.
+
+      // Initialize the simplified crawler service now that browser is ready
+      // Initialize the document repository (which includes index loading)
+      logger.info('Initializing FileSystemDocumentRepository...', 'DocsiServer.start');
+      await this.documentRepository.initialize(); // Await repository initialization
+      logger.info('FileSystemDocumentRepository initialized.', 'DocsiServer.start');
+
+      // Initialize the simplified crawler service now that browser and repositories are ready
+      await this.initializeSimplifiedCrawlerService(this.browser); // Pass only browser
+
+      // Initialize handlers (after services are ready)
       this.initializeHandlers();
-      
+
       // Connect to transport
       const transport = new StdioServerTransport();
       await this.server.connect(transport);
-      
-      logger.info('DocSI MCP server (Simplified Version) running on stdio');
+
+      logger.info('DocSI MCP server (Simplified Version) running on stdio', 'DocsiServer');
     } catch (error) {
-      logger.error('Failed to start DocSI MCP server:', error);
+      logger.logError(error instanceof Error ? error : new Error(String(error)), 'DocsiServer', 'Failed to start DocSI MCP server');
       process.exit(1);
     }
   }

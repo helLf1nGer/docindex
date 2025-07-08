@@ -6,20 +6,27 @@
 import path from 'path';
 import { createHash } from 'crypto';
 import {
+  FileSystemError,
+  DocumentNotFoundError,
+  ValidationError,
+  SerializationError, // Added SerializationError
+  isDocsiError
+} from '../../../shared/domain/errors.js';
+import {
   IDocumentRepository,
   DocumentSearchQuery
 } from '../../../shared/domain/repositories/DocumentRepository.js';
 import { Document } from '../../../shared/domain/models/Document.js';
 import { config } from '../config.js';
 import { extractUnifiedContent, UnifiedExtractionOptions } from '../UnifiedContentExtractor.js';
-import { getLogger } from '../logging.js';
+import { Logger, getLogger } from '../logging.js'; // Import Logger type
 import { InMemoryDocumentIndex } from './document/DocumentIndex.js';
 import { DocumentCache } from './document/DocumentCache.js';
 import { DocumentFileStorage } from './document/DocumentFileStorage.js';
 import { DocumentSearch } from './document/DocumentSearch.js';
 import { DocumentValidator } from './document/DocumentValidator.js';
 
-const logger = getLogger();
+// Removed global logger instance
 
 /**
  * File system-based document repository
@@ -30,21 +37,24 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
   private cache: DocumentCache;
   private storage: DocumentFileStorage;
   private searchService: DocumentSearch;
+  private logger: Logger; // Added logger property
   
   /**
    * Create a new file system document repository
    * @param baseDir Base directory for storing documents
    */
-  constructor(baseDir?: string) {
+  constructor(baseDir?: string, loggerInstance?: Logger) { // Added optional logger parameter
     this.baseDir = baseDir || path.join(config.dataDir, 'documents');
     
     // Initialize components
-    this.index = new InMemoryDocumentIndex();
+    this.index = new InMemoryDocumentIndex(this.baseDir); // Pass baseDir for index persistence
     this.cache = new DocumentCache(100, 1000 * 60 * 30); // 100 docs, 30 minute TTL
     this.storage = new DocumentFileStorage(this.baseDir);
     this.searchService = new DocumentSearch();
     
-    logger.info(`FileSystemDocumentRepository initialized with base directory: ${this.baseDir}`, 'FileSystemDocumentRepository');
+    this.logger = loggerInstance || getLogger(); // Use injected logger or fallback to global
+    this.logger.info(`FileSystemDocumentRepository initialized with base directory: ${this.baseDir}`, 'FileSystemDocumentRepository');
+    this.logger.info(`[DEBUG] FileSystemDocumentRepository constructed with baseDir: ${this.baseDir}`, 'FileSystemDocumentRepository.constructor');
   }
   
   /**
@@ -52,17 +62,24 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    */
   async initialize(): Promise<void> {
     try {
-      logger.info('Initializing document repository...', 'FileSystemDocumentRepository');
+      this.logger.info('Initializing document repository...', 'FileSystemDocumentRepository');
       
-      // Initialize storage
+      // Initialize storage (already logs internally)
       await this.storage.initialize();
+
+      // Initialize the index (load from file) BEFORE building indices
+      this.logger.info('Initializing document index...', 'FileSystemDocumentRepository.initialize');
+      await this.index.initialize(); // Await index loading
+      this.logger.info('Document index initialized.', 'FileSystemDocumentRepository.initialize');
       
-      // Build indices
+      // Build indices (now safe to use the index)
       await this.buildIndices();
       
-      logger.info(`Document repository initialized. Indexed ${this.index.size} documents.`, 'FileSystemDocumentRepository');
+      this.logger.info(`Document repository initialized. Indexed ${await this.index.size()} documents.`, 'FileSystemDocumentRepository');
     } catch (error: unknown) {
-      throw new Error(`Failed to initialize document repository: ${error instanceof Error ? error.message : String(error)}`);
+      const message = `Failed to initialize document repository: ${error instanceof Error ? error.message : String(error)}`;
+      this.logger.error(message, 'FileSystemDocumentRepository.initialize', error);
+      throw new FileSystemError(message, this.baseDir, error instanceof Error ? error : undefined);
     }
   }
   
@@ -81,31 +98,32 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    * This creates in-memory maps from URL to file path and ID to file path
    */
   private async buildIndices(): Promise<void> {
-    logger.info('Building document indices...', 'FileSystemDocumentRepository');
+    this.logger.info('Building document indices...', 'FileSystemDocumentRepository.buildIndices');
     
     // Clear existing indices
-    this.index.clear();
+    await this.index.clear();
     
     // Count of indexed documents
     let count = 0;
     
     // Process each file in the document store
-    await this.storage.walkDirectory(async (filePath) => {
+    await this.storage.walkDirectory(this.storage.getBaseDir(), async (filePath: string) => { // Added baseDir and type annotation
       try {
         // Read document metadata
         const document = await this.storage.readDocument(filePath);
         
         // Add to indices
-        this.index.setPathForId(document.id, filePath);
-        this.index.setPathForUrl(document.url, filePath);
+        await this.index.setPathForId(document.id, filePath);
+        await this.index.setPathForUrl(document.url, filePath);
         
         count++;
       } catch (error: unknown) {
-        logger.warn(`Error indexing document file ${filePath}: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository');
+        this.logger.warn(`Error indexing document file ${filePath}: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository.buildIndices');
+        this.logger.error(`[DEBUG] Error indexing file at path: ${filePath}`, 'FileSystemDocumentRepository.buildIndices', error);
       }
     });
     
-    logger.info(`Indexed ${count} documents.`, 'FileSystemDocumentRepository');
+    this.logger.info(`Indexed ${count} documents.`, 'FileSystemDocumentRepository.buildIndices');
   }
   
   /**
@@ -114,39 +132,49 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    * @returns Promise resolving to the document or null if not found
    */
   async findById(id: string): Promise<Document | null> {
+    this.logger.debug(`[FileSystemDocumentRepository] findById called with id: ${id}`, 'findById');
+    this.logger.debug(`[FileSystemDocumentRepository] Entering findById for ID: ${id}`, 'findById');
+    let filePath: string | undefined; // Declare filePath outside the try block
     try {
       // Check if the document is in the cache
       if (this.cache.has(id)) {
         const cachedDoc = this.cache.get(id);
         if (cachedDoc) {
-          logger.debug(`Cache hit for document ${id}`, 'FileSystemDocumentRepository');
+          this.logger.debug(`Cache hit for document ${id}`, 'FileSystemDocumentRepository.findById');
           return cachedDoc;
         }
       }
       
       // Get file path from index or calculate it
-      let filePath = this.index.getPathById(id);
+      filePath = await this.index.getPathById(id); // Assign to the outer scope variable
+        this.logger.debug(`[FileSystemDocumentRepository] ID ${id} not found in index.`, 'findById');
       if (!filePath) {
         // Not in index, calculate path
         filePath = this.storage.getFilePath(id);
         
         // Check if the file exists before proceeding
+        this.logger.debug(`[DEBUG] findById(${id}): Checking existence of calculated path: ${filePath}`, 'FileSystemDocumentRepository.findById');
         if (!await this.storage.fileExists(filePath)) {
           return null;
+          this.logger.warn(`[FileSystemDocumentRepository] Calculated path ${filePath} for ID ${id} does not exist. Returning null.`, 'findById');
         }
       }
       
       // Double-check file exists (in case index is stale)
+      this.logger.debug(`[DEBUG] findById(${id}): Checking existence of indexed path: ${filePath}`, 'FileSystemDocumentRepository.findById');
       if (!await this.storage.fileExists(filePath)) {
         // File doesn't exist, remove from index
-        this.index.removeId(id);
+        await this.index.removeId(id);
         return null;
+        this.logger.warn(`[FileSystemDocumentRepository] Indexed path ${filePath} for ID ${id} does not exist. Removing from index and returning null.`, 'findById');
       }
       
-      logger.debug(`Loading document ${id} from disk: ${filePath}`, 'FileSystemDocumentRepository');
+      this.logger.debug(`Loading document ${id} from disk: ${filePath}`, 'FileSystemDocumentRepository.findById');
       
       // Read document
+      this.logger.debug(`[FileSystemDocumentRepository] Attempting to read document from filePath: ${filePath}`, 'findById');
       const document = await this.storage.readDocument(filePath);
+      this.logger.debug(`[FileSystemDocumentRepository] Reading document from path: ${filePath}`, 'findById');
       
       // Ensure the document has text content
       if (!document.textContent && document.content) {
@@ -156,20 +184,48 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
       // Add to cache
       this.cache.set(id, document);
       
+      this.logger.debug(`[FileSystemDocumentRepository] Successfully read document ${id} from ${filePath}. Adding to cache.`, 'findById');
       return document;
     } catch (error: unknown) {
-      // Log error and return null (don't expose file system errors to clients)
-      logger.error(`Error finding document by ID: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository');
+      // Log error and return null (don't expose specific file system errors to clients via return)
+      this.logger.error(`Error finding document by ID ${id}: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository.findById', error);
       return null;
+      this.logger.error(`[FileSystemDocumentRepository] Error in findById for ID ${id}. Path: ${filePath ?? 'N/A'}`, 'findById', error); // Use nullish coalescing
     }
   }
   
+  /**
+   * Find multiple documents by their IDs
+   * @param ids Array of Document IDs
+   * @returns Promise resolving to an array of found documents
+   */
+  async findByIds(ids: string[]): Promise<Document[]> {
+    this.logger.debug(`[FileSystemDocumentRepository] Entering findByIds for ${ids.length} IDs`, 'findByIds');
+    
+    // Use Promise.all to fetch documents concurrently
+    const loadPromises = ids.map(id =>
+      this.findById(id).catch(error => {
+        // Log individual errors but don't let one failure stop others
+        this.logger.error(`Error fetching document ${id} within findByIds: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository.findByIds', error);
+        return null; // Return null for failed fetches
+      })
+    );
+    
+    const results = await Promise.all(loadPromises);
+    
+    // Filter out null results (documents not found or failed to load)
+    const foundDocuments = results.filter((doc): doc is Document => doc !== null);
+    
+    this.logger.debug(`[FileSystemDocumentRepository] findByIds completed. Found ${foundDocuments.length} out of ${ids.length} requested documents.`, 'findByIds');
+    return foundDocuments;
+  }
+
   /**
    * Process document content to extract text
    * @param document Document to process
    */
   private async processDocumentContent(document: Document): Promise<void> {
-    logger.info(`Processing content for document ${document.id}`, 'FileSystemDocumentRepository');
+    this.logger.info(`Processing content for document ${document.id}`, 'FileSystemDocumentRepository.processDocumentContent');
     
     try {
       // Extract text content from HTML content
@@ -182,17 +238,17 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
       
       if (extractedContent.textContent) {
         document.textContent = extractedContent.textContent;
-        logger.info(`Extracted ${document.textContent.length} chars of text content for ${document.id}`, 'FileSystemDocumentRepository');
+        this.logger.info(`Extracted ${document.textContent.length} chars of text content for ${document.id}`, 'FileSystemDocumentRepository.processDocumentContent');
         
         // Update document metadata
         document.metadata = document.metadata || {};
         Object.assign(document.metadata, extractedContent.metadata);
         
-        // Save the updated document
-        await this.save(document);
+        // The initial save() call will handle writing the updated document.
+        // No need to call save() recursively here.
       }
     } catch (error) {
-      logger.warn(`Failed to extract text content for ${document.id}: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository');
+      this.logger.warn(`Failed to extract text content for ${document.id}: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository.processDocumentContent', error);
     }
   }
   
@@ -202,26 +258,37 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    * @returns Promise resolving to the document or null if not found
    */
   async findByUrl(url: string): Promise<Document | null> {
+    this.logger.debug(`[FileSystemDocumentRepository] findByUrl called with url: ${url}`, 'findByUrl');
+    this.logger.debug(`[FileSystemDocumentRepository] Entering findByUrl for URL: ${url}`, 'findByUrl');
     try {
       // Check if URL is in the index
-      const filePath = this.index.getPathByUrl(url);
+      const filePath = await this.index.getPathByUrl(url);
+      this.logger.debug(`[FileSystemDocumentRepository] findByUrl: Index lookup for URL '${url}' returned path: ${filePath}`, 'findByUrl'); // Log index lookup result
       if (filePath) {
+      this.logger.debug(`[FileSystemDocumentRepository] Found path in URL index for ${url}: ${filePath}`, 'findByUrl');
         if (await this.storage.fileExists(filePath)) {
           // Read file to get document ID
           const document = await this.storage.readDocument(filePath);
           return this.findById(document.id);
+          this.logger.debug(`[FileSystemDocumentRepository] Reading document from indexed path ${filePath} to get ID.`, 'findByUrl');
+          this.logger.debug(`[FileSystemDocumentRepository] Found path in URL index: ${filePath}`, 'findByUrl');
+          this.logger.debug(`[FileSystemDocumentRepository] Found document ID ${document.id} from indexed path. Calling findById(${document.id}).`, 'findByUrl');
         } else {
           // File doesn't exist, remove from index
-          this.index.removeUrl(url);
+          await this.index.removeUrl(url);
         }
+          this.logger.warn(`[FileSystemDocumentRepository] Indexed path ${filePath} for URL ${url} does not exist. Removing from index.`, 'findByUrl');
       }
       
       // Fall back to ID-based lookup
       const id = this.urlToId(url);
+      this.logger.debug(`[FileSystemDocumentRepository] URL not in index or file missing. Falling back to ID lookup with calculated ID: ${id}`, 'findByUrl');
+      this.logger.debug(`[FileSystemDocumentRepository] Calling findById with fallback ID: ${id}`, 'findByUrl'); // Log the ID used in fallback
       return this.findById(id);
     } catch (error) {
-      logger.error(`Error finding document by URL: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository');
+      this.logger.error(`Error finding document by URL ${url}: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository.findByUrl', error);
       return null;
+      this.logger.error(`[FileSystemDocumentRepository] Error in findByUrl for URL ${url}.`, 'findByUrl', error);
     }
   }
   
@@ -231,13 +298,30 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    * @returns Promise that resolves when the operation is complete
    */
   async save(document: Document): Promise<void> {
+    const correctId = this.urlToId(document.url);
+    this.logger.debug(`[FileSystemDocumentRepository] Entering save() for URL: ${document.url}. Calculated ID: ${correctId}. Received ID: ${document?.id || 'MISSING_ID'}`, 'save');
+    if (document.id && document.id !== correctId) {
+      this.logger.warn(`[FileSystemDocumentRepository] Document received with ID ${document.id} but calculated ID based on URL ${document.url} is ${correctId}. Using calculated ID.`, 'save');
+    }
+    // Ensure the document object uses the correct ID going forward
+    document.id = correctId;
+
+    this.logger.debug(`save() called for document ID: ${document.id}`, 'FileSystemDocumentRepository.save');
+    // Ensure the document object itself uses the correct ID going forward
+    document.id = correctId; // This line was already present, reinforcing its importance
+ 
+    // DEBUG LOG: Log entire document object received by save() (now with enforced correct ID)
+    this.logger.debug(`[FileSystemDocumentRepository] Document object for save (ID enforced):`, 'FileSystemDocumentRepository.save', { document: JSON.stringify(document) }); // Stringify for logging
     try {
-      // Validate document before saving
+      // Validate document before saving (using the document object with the correct ID)
       const validationResult = DocumentValidator.validateForStorage(document);
+      // DEBUG LOG: Log validation result (using correctId for clarity)
+      this.logger.debug(`[FileSystemDocumentRepository] Validation result for ${correctId}: ${JSON.stringify(validationResult)}`, 'FileSystemDocumentRepository.save');
       if (!validationResult.isValid) {
-        const messages = validationResult.messages.join(', ');
-        logger.warn(`Document validation issues before save: ${messages}`, 'FileSystemDocumentRepository');
-        // We continue with best effort, but log the issues
+        const messages = validationResult.messages.join('; ');
+        this.logger.error(`Document ${correctId} failed validation before save: ${messages}`, 'FileSystemDocumentRepository.save');
+        // Throw a ValidationError to prevent saving invalid data
+        throw new ValidationError(`Document validation failed: ${messages}`, validationResult.messages);
       }
       
       // Ensure document has proper content
@@ -245,32 +329,55 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
         await this.processDocumentContent(document);
       }
       
-      logger.info(`Saving document: ${document.title} (${document.id})`, 'FileSystemDocumentRepository');
+      this.logger.info(`Saving document: ${document.title} (${correctId})`, 'FileSystemDocumentRepository.save');
+  
+      // Get file path using the correct ID
+      const filePath = this.storage.getFilePath(correctId);
+  
+      this.logger.debug(`[FileSystemDocumentRepository] Calculated file path for ID ${correctId}: ${filePath}`, 'save');
+      // Update indices using the correct ID
+      await this.index.setPathForId(correctId, filePath);
+      await this.index.setPathForUrl(document.url, filePath);
+      // Log index update using correctId
+      this.logger.debug(`[InMemoryDocumentIndex] setPathForId called via save: ID '${correctId}' to path '${filePath}'`, 'FileSystemDocumentRepository.save');
+      this.logger.debug(`[InMemoryDocumentIndex] setPathForUrl called via save: URL '${document.url}' to path '${filePath}'`, 'FileSystemDocumentRepository.save');
+      this.logger.debug(`Index paths set for ID ${correctId} and URL ${document.url} to ${filePath}`, 'FileSystemDocumentRepository.save');
       
-      // Get file path
-      const filePath = this.storage.getFilePath(document.id);
-      
-      // Update indices
-      this.index.setPathForId(document.id, filePath);
-      this.index.setPathForUrl(document.url, filePath);
-      
-      // Ensure document has text content
-      this.validateDocumentContent(document);
-      
-      // Write document to file
-      await this.storage.writeDocument(filePath, document);
-      
-      // Update cache
-      this.cache.set(document.id, document);
-      
-      logger.info(`Document saved successfully: ${document.title} (${document.id})`, 'FileSystemDocumentRepository');
-    } catch (error: unknown) {
-      // Remove from indices on error to force reload
-      if (document && document.id) {
-        this.index.removeId(document.id);
+      // --- BEGIN ADDED PRE-STORAGE VALIDATION ---
+      // Explicitly check for non-empty textContent before attempting storage
+      if (!document || !document.textContent || typeof document.textContent !== 'string' || document.textContent.trim().length === 0) {
+        const errorMsg = `Cannot save document ${correctId} with invalid or missing textContent.`;
+        this.logger.error(errorMsg, 'FileSystemDocumentRepository.save');
+        throw new ValidationError(errorMsg);
       }
-      logger.error(`Failed to save document: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository');
-      throw new Error(`Failed to save document: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.debug(`Pre-storage validation passed for document ${correctId}. textContent length: ${document.textContent.length}`, 'FileSystemDocumentRepository.save');
+      // --- END ADDED PRE-STORAGE VALIDATION ---
+
+      // Log structure before passing to storage (using correctId and the document with the correct ID)
+      this.logger.debug(`[FileSystemDocumentRepository] Passing document to storage.writeDocument:`, 'FileSystemDocumentRepository.save', { id: correctId, url: document.url, title: document.title, sourceId: document.sourceId, textContentLength: document.textContent?.length });
+  
+      // Write document to file (storage layer handles logging, ensure passing the document object with the correct ID)
+      await this.storage.writeDocument(filePath, document); // document.id is already correctId here
+      this.logger.debug(`[FileSystemDocumentRepository] Calling storage.writeDocument for path: ${filePath} with document ID: ${document.id}`, 'save');
+
+      this.logger.debug(`Returned from writeDocument for doc ID: ${correctId}`, 'FileSystemDocumentRepository.save');
+      // Update cache using the correct ID and the document object with the correct ID
+      this.cache.set(correctId, document);
+      this.logger.debug(`[FileSystemDocumentRepository] Document ${correctId} added to cache after save.`, 'save');
+
+      this.logger.info(`Document saved successfully: ${document.title} (${correctId})`, 'FileSystemDocumentRepository.save');
+    } catch (error: unknown) {
+      this.logger.error(`SAVE FAILED for document ID ${correctId}:`, 'FileSystemDocumentRepository.save', error);
+      // Remove from indices on error using the correct ID
+      if (correctId) { // Check if correctId was successfully calculated
+        await this.index.removeId(correctId);
+      }
+      // Re-throw specific errors, wrap others
+      if (isDocsiError(error)) {
+        throw error; // Propagate known Docsi errors (like ValidationError, FileSystemError from storage)
+      }
+      // Removed filePath as it's not in scope here
+      throw new FileSystemError(`Failed to save document: ${error instanceof Error ? error.message : String(error)}`, undefined, error instanceof Error ? error : undefined);
     }
   }
   
@@ -285,30 +392,30 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
     // Log validation messages
     if (validationResult.messages.length > 0) {
       validationResult.messages.forEach(message => {
-        logger.warn(`Document ${document.id} validation: ${message}`, 'FileSystemDocumentRepository');
+        this.logger.warn(`Document ${document.id} validation: ${message}`, 'FileSystemDocumentRepository.validateDocumentContent');
       });
     }
     
     // Handle missing text content case
     if (!document.textContent || document.textContent.trim().length === 0) {
-      logger.warn(`Document ${document.id} has no text content!`, 'FileSystemDocumentRepository');
+      this.logger.warn(`Document ${document.id} has no text content!`, 'FileSystemDocumentRepository.validateDocumentContent');
       
       // If we can't extract text content but have html content, use a placeholder
       if (document.content && document.content.length > 0) {
-        logger.info(`Using placeholder text content for ${document.id}`, 'FileSystemDocumentRepository');
+        this.logger.info(`Using placeholder text content for ${document.id}`, 'FileSystemDocumentRepository.validateDocumentContent');
         document.textContent = `[Content available but not extracted: ${document.title}]`;
       } else {
         // No content at all
-        logger.warn(`Document ${document.id} has no HTML content either!`, 'FileSystemDocumentRepository');
+        this.logger.warn(`Document ${document.id} has no HTML content either!`, 'FileSystemDocumentRepository.validateDocumentContent');
         document.textContent = `[No content available: ${document.title}]`;
       }
     }
     
     // If validation failed completely, log detailed error
     if (!validationResult.isValid && validationResult.error) {
-      logger.error(
+      this.logger.error(
         `Document ${document.id} failed validation: ${validationResult.error.message}`,
-        'FileSystemDocumentRepository'
+        'FileSystemDocumentRepository.validateDocumentContent'
       );
       // We still continue with best-effort approach to save what we can
     }
@@ -322,7 +429,7 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
   async delete(id: string): Promise<boolean> {
     try {
       // Get file path from index or calculate it
-      const filePath = this.index.getPathById(id) || this.storage.getFilePath(id);
+      const filePath = await this.index.getPathById(id) || this.storage.getFilePath(id);
       
       // Check if the file exists
       if (!await this.storage.fileExists(filePath)) {
@@ -335,16 +442,16 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
         const document = await this.storage.readDocument(filePath);
         documentUrl = document.url;
       } catch (error) {
-        logger.warn(`Error reading document before deletion: ${error}`, 'FileSystemDocumentRepository');
+        this.logger.warn(`Error reading document ${id} before deletion: ${error}`, 'FileSystemDocumentRepository.delete', error);
       }
       
       // Delete the file
       const result = await this.storage.deleteDocument(filePath);
       
       // Remove from indices
-      this.index.removeId(id);
+      await this.index.removeId(id);
       if (documentUrl) {
-        this.index.removeUrl(documentUrl);
+        await this.index.removeUrl(documentUrl);
       }
       
       // Remove from cache
@@ -352,7 +459,7 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
       
       return result;
     } catch (error: unknown) {
-      logger.error(`Error deleting document: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository');
+      this.logger.error(`Error deleting document ${id}: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository.delete', error);
       return false;
     }
   }
@@ -364,15 +471,17 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    */
   async search(query: DocumentSearchQuery): Promise<Document[]> {
     try {
-      logger.info(`Search query received: ${JSON.stringify(query, null, 2)}`, 'FileSystemDocumentRepository');
+      this.logger.info(`Search query received: ${JSON.stringify(query)}`, 'FileSystemDocumentRepository.search');
       
       // Load all documents
       const documents = await this.loadAllDocuments();
       
       // Perform search
+      this.logger.debug(`[DEBUG] Passing ${documents.length} documents to searchService.executeSearch.`, 'FileSystemDocumentRepository.search');
+
       return this.searchService.executeSearch(documents, query);
     } catch (error: unknown) {
-      logger.error(`Error searching documents: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository');
+      this.logger.error(`Error searching documents: ${error instanceof Error ? error.message : String(error)}`, 'FileSystemDocumentRepository.search', error);
       return [];
     }
   }
@@ -382,10 +491,10 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    * @returns Promise resolving to array of all documents
    */
   private async loadAllDocuments(): Promise<Document[]> {
-    logger.info(`Loading all documents from ${this.baseDir}`, 'FileSystemDocumentRepository');
+    this.logger.info(`Loading all documents from ${this.baseDir}`, 'FileSystemDocumentRepository.loadAllDocuments');
     
     const documents: Document[] = [];
-    const allIds = this.index.getAllIds();
+    const allIds = await this.index.getAllIds();
     
     // Load all documents using their IDs
     const loadPromises = allIds.map(id => 
@@ -393,6 +502,8 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
     );
     
     const loadedDocs = await Promise.all(loadPromises);
+    this.logger.debug(`[DEBUG] loadAllDocuments loaded ${loadedDocs.length} documents from index.`, 'FileSystemDocumentRepository.loadAllDocuments');
+
     return loadedDocs.filter(Boolean) as Document[];
   }
   
@@ -433,7 +544,7 @@ export class FileSystemDocumentRepository implements IDocumentRepository {
    */
   async count(query?: DocumentSearchQuery): Promise<number> {
     if (!query) {
-      return this.index.size;
+      return await this.index.size();
     }
     
     const documents = await this.search({

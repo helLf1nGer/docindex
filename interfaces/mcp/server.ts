@@ -93,7 +93,8 @@ class DocSIServer {
     this.getDocumentHandler = new GetDocumentHandler(documentRepository);
     this.batchCrawlToolHandler = new BatchCrawlToolHandler(
       documentSourceRepository,
-      documentRepository
+      documentRepository,
+      new (require('events').EventEmitter)()
     );
     
     // Initialize error handler

@@ -56,8 +56,8 @@ export function enhanceExistingBatchHandler(
   
   try {
     // Extract repositories from the handler
-    const documentRepository = batchHandler['documentRepository'];
-    const sourceRepository = batchHandler['sourceRepository'];
+    const documentRepository = batchHandler.getDocumentRepository();
+    const sourceRepository = batchHandler.getSourceRepository();
     
     if (!documentRepository || !sourceRepository) {
       logger.warn('Could not access repositories from batch handler', 'enhanced-integration');

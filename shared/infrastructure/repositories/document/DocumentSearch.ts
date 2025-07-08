@@ -5,15 +5,22 @@
 import Fuse from 'fuse.js';
 import { Document } from '../../../../shared/domain/models/Document.js';
 import { DocumentSearchQuery } from '../../../../shared/domain/repositories/DocumentRepository.js';
-import { getLogger } from '../../../infrastructure/logging.js';
+import { Logger, getLogger } from '../../../infrastructure/logging.js'; // Import Logger type
+import { DocsiError } from '../../../../shared/domain/errors.js'; // Import base error
 import { MatchIndices } from './DocumentTypes.js';
 
-const logger = getLogger();
+// Removed global logger instance
 
 /**
  * Document search helper
  */
 export class DocumentSearch {
+  private logger: Logger; // Added logger property
+
+  constructor(loggerInstance?: Logger) { // Added optional logger parameter
+    this.logger = loggerInstance || getLogger(); // Use injected or global logger
+  }
+
   /**
    * Find documents that match the given query
    * @param documents Array of documents to search
@@ -21,25 +28,26 @@ export class DocumentSearch {
    * @returns Array of matching documents
    */
   executeSearch(documents: Document[], query: DocumentSearchQuery): Document[] {
-    logger.info(`Searching ${documents.length} documents with query: ${JSON.stringify(query)}`, 'DocumentSearch');
+    this.logger.info(`Searching ${documents.length} documents with query: ${JSON.stringify(query)}`, 'DocumentSearch.executeSearch');
+    try { // Added try block
     
     // Filter by source IDs if provided
     let results = documents;
     if (query.sourceIds && query.sourceIds.length > 0) {
-      logger.info(`Filtering by source IDs: ${query.sourceIds.join(', ')}`, 'DocumentSearch');
+      this.logger.info(`Filtering by source IDs: ${query.sourceIds.join(', ')}`, 'DocumentSearch.executeSearch');
       results = results.filter(doc => 
         query.sourceIds!.includes(doc.sourceId)
       );
-      logger.info(`After source filter: ${results.length} documents`, 'DocumentSearch');
+      this.logger.info(`After source filter: ${results.length} documents`, 'DocumentSearch.executeSearch');
     }
     
     // Filter by tags if provided
     if (query.tags && query.tags.length > 0) {
-      logger.info(`Filtering by tags: ${query.tags.join(', ')}`, 'DocumentSearch');
+      this.logger.info(`Filtering by tags: ${query.tags.join(', ')}`, 'DocumentSearch.executeSearch');
       results = results.filter(doc => 
         query.tags!.every(tag => doc.tags && doc.tags.includes(tag))
       );
-      logger.info(`After tag filter: ${results.length} documents`, 'DocumentSearch');
+      this.logger.info(`After tag filter: ${results.length} documents`, 'DocumentSearch.executeSearch');
     }
     
     // Filter by indexed date if provided
@@ -57,7 +65,7 @@ export class DocumentSearch {
     
     // Text search if provided
     if (query.text) {
-      logger.info(`Performing text search for: "${query.text}"`, 'DocumentSearch');
+      this.logger.info(`Performing text search for: "${query.text}"`, 'DocumentSearch.executeSearch');
       results = this.performTextSearch(results, query.text);
     }
     
@@ -70,8 +78,13 @@ export class DocumentSearch {
       results = results.slice(0, query.limit);
     }
     
-    logger.info(`Search returned ${results.length} results`, 'DocumentSearch');
+    this.logger.info(`Search returned ${results.length} results`, 'DocumentSearch.executeSearch');
     return results;
+    } catch (error: unknown) { // Added catch block
+      const message = `Error during document search: ${error instanceof Error ? error.message : String(error)}`;
+      this.logger.error(message, 'DocumentSearch.executeSearch', error);
+      throw new DocsiError(message, 'SEARCH_EXECUTION_ERROR', { originalError: error });
+    }
   }
   
   /**
@@ -97,12 +110,12 @@ export class DocumentSearch {
     });
     
     const results = fuse.search(searchText);
-    logger.info(`Fuse search returned ${results.length} results`, 'DocumentSearch');
+    this.logger.info(`Fuse search returned ${results.length} results`, 'DocumentSearch.performTextSearch');
     
     // Log the top results for debugging
     if (results.length > 0) {
       results.slice(0, 3).forEach((result, index) => {
-        logger.info(`Result ${index+1}: "${result.item.title}" (score: ${result.score || 'unknown'})`, 'DocumentSearch');
+        this.logger.info(`Result ${index+1}: "${result.item.title}" (score: ${result.score || 'unknown'})`, 'DocumentSearch.performTextSearch');
         
         // Add match information to the document
         // This can be used by the client to highlight relevant sections

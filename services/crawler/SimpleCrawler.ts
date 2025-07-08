@@ -1,3 +1,5 @@
+import { Logger } from '../../shared/infrastructure/logging.js'; // Removed getLogger
+
 /**
  * SimpleCrawler
  * 
@@ -7,27 +9,31 @@
  */
 
 import { EventEmitter } from 'events';
-import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
+import axios, { AxiosError, AxiosInstance, AxiosRequestConfig } from 'axios'; // Added AxiosError
 import { URL } from 'url';
 import { SimpleUrlProcessor, ProcessedUrl } from './SimpleUrlProcessor.js';
 import { SimpleContentExtractor, ExtractedContent } from './SimpleContentExtractor.js';
-
+import {
+  CrawlError,
+  CrawlHttpError,
+  CrawlNetworkError,
+  CrawlTimeoutError,
+  ValidationError,
+  FileSystemError,
+  isDocsiError
+} from '../../shared/domain/errors.js'; // Import custom errors
 // Document type from the existing Document model
 // Importing from shared domain to maintain compatibility
 import { Document } from '../../shared/domain/models/Document.js';
 
-// Redirect all console.log to console.error to avoid breaking MCP protocol
-const originalConsoleLog = console.log;
-console.log = function(...args: any[]) {
-  console.error(...args);
-};
+// Removed console.log redirection hack
 
 export interface CrawlOptions {
   /** Base URL to start crawling from */
   baseUrl: string;
   /** Maximum crawling depth (default: 3) */
   maxDepth?: number;
-  /** Maximum pages to crawl (default: 100) */
+  /** Maximum pages to crawl (default: 500) */
   maxPages?: number;
   /** Request delay in ms between requests (default: 1000) */
   requestDelay?: number;
@@ -92,6 +98,7 @@ export class SimpleCrawler extends EventEmitter {
   private contentExtractor: SimpleContentExtractor;
   private httpClient: AxiosInstance;
   private documentStorage: DocumentStorage;
+  private logger: Logger; // Added logger property
   
   private options: Required<CrawlOptions>;
   private status: CrawlStatus;
@@ -103,14 +110,14 @@ export class SimpleCrawler extends EventEmitter {
   
   private shouldStop = false;
   
-  constructor(documentStorage: DocumentStorage, options: CrawlOptions) {
+  constructor(documentStorage: DocumentStorage, options: CrawlOptions, logger: Logger) { // Added logger parameter
     super();
     
     // Set default options
     this.options = {
       baseUrl: options.baseUrl,
       maxDepth: options.maxDepth ?? 3,
-      maxPages: options.maxPages ?? 100,
+      maxPages: options.maxPages ?? 500,
       requestDelay: options.requestDelay ?? 1000,
       concurrency: options.concurrency ?? 2,
       maxRetries: options.maxRetries ?? 3,
@@ -151,6 +158,7 @@ export class SimpleCrawler extends EventEmitter {
     });
     
     this.documentStorage = documentStorage;
+    this.logger = logger; // Assign logger instance
     
     // Initialize status
     this.status = {
@@ -165,6 +173,7 @@ export class SimpleCrawler extends EventEmitter {
   }
   
   /**
+          getLogger().debug(`[SimpleCrawler] Emitting document for ${url}: ${JSON.stringify(document, null, 2)}`, 'SimpleCrawler');
    * Start the crawling process
    */
   async start(): Promise<CrawlStatus> {
@@ -177,7 +186,8 @@ export class SimpleCrawler extends EventEmitter {
       this.urlQueue.push(initialUrl);
       this.status.discovered = 1;
     } else {
-      throw new Error(`Failed to process initial URL: ${this.options.baseUrl}`);
+      this.logger.error(`Failed to process initial URL: ${this.options.baseUrl}`, 'SimpleCrawler.start');
+      throw new ValidationError(`Invalid initial URL: ${this.options.baseUrl}`);
     }
     
     // Process the queue with concurrency control
@@ -246,6 +256,7 @@ export class SimpleCrawler extends EventEmitter {
       
       // Process URL
       this.processSingleUrl(nextUrl).catch(error => {
+        this.logger.error(`Error processing URL ${nextUrl.url} in queue`, 'SimpleCrawler.processQueue', error);
         this.status.failed++;
       }).finally(() => {
         // Remove from processing and decrease active requests
@@ -281,6 +292,7 @@ export class SimpleCrawler extends EventEmitter {
         this.visitedUrls.add(processedUrl.normalizedUrl);
         return;
       } else if (exists && this.options.force) {
+        this.logger.debug(`Document exists but force=true, recrawling: ${url}`, 'SimpleCrawler.processSingleUrl');
       }
       
       // Fetch the URL
@@ -294,8 +306,9 @@ export class SimpleCrawler extends EventEmitter {
       // Extract content
       const extractedContent = this.contentExtractor.extract(html, url);
       if (!extractedContent) {
+        this.logger.warn(`Failed to extract content from URL: ${url}`, 'SimpleCrawler.processSingleUrl');
         this.status.failed++;
-        return;
+        throw new CrawlError(`Content extraction failed for ${url}`); // Throw specific error
       }
       
       // Save document
@@ -318,8 +331,10 @@ export class SimpleCrawler extends EventEmitter {
       
       this.emit('processed', { url, depth, success: true });
     } catch (error) {
+      this.logger.error(`Failed to process URL: ${url}`, 'SimpleCrawler.processSingleUrl', error);
       this.status.failed++;
-      this.emit('processed', { url, depth, success: false, error });
+      // Emit the original error object for better context downstream
+      this.emit('processed', { url, depth, success: false, error: error instanceof Error ? error : new Error(String(error)) });
     }
   }
   
@@ -329,13 +344,32 @@ export class SimpleCrawler extends EventEmitter {
   private async fetchWithRetry(url: string, retryCount = 0): Promise<any> {
     try {
       return await this.httpClient.get(url);
-    } catch (error) {
-      if (retryCount < this.options.maxRetries) {
-        const delay = Math.pow(2, retryCount) * 1000; // Exponential backoff
+    } catch (error: unknown) {
+      const attempt = retryCount + 1;
+      this.logger.warn(`Attempt ${attempt} failed for URL ${url}`, 'SimpleCrawler.fetchWithRetry', error);
+
+      if (attempt <= this.options.maxRetries) {
+        const delay = Math.pow(2, retryCount) * 500 + Math.random() * 500; // Exponential backoff with jitter
+        this.logger.debug(`Retrying fetch for ${url} in ${delay.toFixed(0)}ms (Attempt ${attempt}/${this.options.maxRetries})`, 'SimpleCrawler.fetchWithRetry');
         await this.sleep(delay);
-        return this.fetchWithRetry(url, retryCount + 1);
+        return this.fetchWithRetry(url, attempt);
       }
-      throw error;
+
+      // Max retries exceeded, throw specific crawl error
+      if (axios.isAxiosError(error)) {
+        const axiosError = error as AxiosError;
+        if (axiosError.code === 'ECONNABORTED' || axiosError.message.includes('timeout')) {
+          throw new CrawlTimeoutError(url, this.options.timeout, { originalError: axiosError });
+        }
+        if (axiosError.response) {
+          // HTTP status error
+          throw new CrawlHttpError(url, axiosError.response.status, axiosError.response.statusText, { originalError: axiosError });
+        }
+        // Other network errors (DNS, connection refused, etc.)
+        throw new CrawlNetworkError(url, axiosError);
+      }
+      // Non-Axios error
+      throw new CrawlNetworkError(url, error instanceof Error ? error : new Error(String(error)));
     }
   }
   
@@ -371,8 +405,16 @@ export class SimpleCrawler extends EventEmitter {
     
     // Save to storage
     const success = await this.documentStorage.saveDocument(document);
-    if (!success) {
-      throw new Error(`Failed to save document: ${url}`);
+    // saveDocument now throws specific errors if validation/write fails
+    try {
+      await this.documentStorage.saveDocument(document);
+    } catch (error) {
+      this.logger.error(`Failed to save document: ${url}`, 'SimpleCrawler.saveDocument', error);
+      // Re-throw specific error or wrap if necessary
+      if (isDocsiError(error)) {
+        throw error; // Propagate known Docsi errors (like ValidationError, FileSystemError)
+      }
+      throw new FileSystemError(`Failed to save document: ${url}`, undefined, error instanceof Error ? error : new Error(String(error)));
     }
     
     this.emit('document', { url, documentId: document.id });
@@ -412,7 +454,8 @@ export class SimpleCrawler extends EventEmitter {
     try {
       const { hostname } = new URL(this.options.baseUrl);
       return hostname.replace(/[^a-zA-Z0-9]/g, '_');
-    } catch (error) {
+    } catch (error: unknown) {
+      this.logger.warn(`Could not determine hostname from baseUrl: ${this.options.baseUrl}`, 'SimpleCrawler.getSourceId', error);
       return 'unknown_source';
     }
   }

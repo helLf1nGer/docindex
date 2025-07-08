@@ -40,6 +40,13 @@ export interface IDocumentRepository {
    * @returns Promise resolving to the document or null if not found
    */
   findById(id: string): Promise<Document | null>;
+
+  /**
+   * Find multiple documents by their IDs
+   * @param ids Array of Document IDs
+   * @returns Promise resolving to an array of found documents (order may not be guaranteed)
+   */
+  findByIds(ids: string[]): Promise<Document[]>;
   
   /**
    * Find a document by its URL

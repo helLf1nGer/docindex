@@ -9,6 +9,7 @@
 import { createServer, Server } from 'http';
 import { AddressInfo } from 'net';
 import { SimpleCrawler, DocumentStorage } from '../SimpleCrawler.js';
+// Removed duplicate logger import
 import { SimpleUrlProcessor } from '../SimpleUrlProcessor.js';
 import { SimpleContentExtractor } from '../SimpleContentExtractor.js';
 import { FileSystemDocumentRepository } from '../../../shared/infrastructure/repositories/FileSystemDocumentRepository.js';
@@ -34,7 +35,7 @@ class DocumentStorageAdapter implements DocumentStorage {
       await this.repository.save(document);
       return true;
     } catch (error) {
-      console.error('Error saving document:', error);
+      logger.error('Error saving document:', 'StorageIntegrationTest', error);
       return false;
     }
   }
@@ -225,35 +226,35 @@ export class StorageIntegrationTest {
    */
   async runTests(): Promise<void> {
     try {
-      console.log('Starting storage integration tests...');
+      logger.info('Starting storage integration tests...', 'StorageIntegrationTest');
       await this.setup();
-      console.log('Test environment set up successfully.');
+      logger.info('Test environment set up successfully.', 'StorageIntegrationTest');
       
       // Test case 1: Basic crawling with storage
-      console.log('Running test case 1: Basic crawling with storage...');
+      logger.info('Running test case 1: Basic crawling with storage...', 'StorageIntegrationTest');
       await this.testBasicCrawlWithStorage();
-      console.log('Test case 1 completed successfully.');
+      logger.info('Test case 1 completed successfully.', 'StorageIntegrationTest');
       
       // Test case 2: Verify document integrity
-      console.log('Running test case 2: Document integrity...');
+      logger.info('Running test case 2: Document integrity...', 'StorageIntegrationTest');
       await this.testDocumentIntegrity();
-      console.log('Test case 2 completed successfully.');
+      logger.info('Test case 2 completed successfully.', 'StorageIntegrationTest');
       
       // Test case 3: Test error handling
-      console.log('Running test case 3: Error handling...');
+      logger.info('Running test case 3: Error handling...', 'StorageIntegrationTest');
       await this.testErrorHandling();
-      console.log('Test case 3 completed successfully.');
+      logger.info('Test case 3 completed successfully.', 'StorageIntegrationTest');
       
       await this.teardown();
-      console.log('Test environment cleaned up successfully.');
+      logger.info('Test environment cleaned up successfully.', 'StorageIntegrationTest');
       
       logger.info('All storage integration tests passed!', 'StorageIntegrationTest');
-      console.log('✅ ALL STORAGE INTEGRATION TESTS PASSED!');
+      logger.info('✅ ALL STORAGE INTEGRATION TESTS PASSED!', 'StorageIntegrationTest');
     } catch (error) {
       const errorMessage = error instanceof Error ? error.stack || error.message : String(error);
       logger.error(`Test failed: ${errorMessage}`, 'StorageIntegrationTest');
-      console.error('❌ STORAGE INTEGRATION TESTS FAILED:');
-      console.error(errorMessage);
+      logger.error('❌ STORAGE INTEGRATION TESTS FAILED:', 'StorageIntegrationTest');
+      logger.error(errorMessage, 'StorageIntegrationTest'); // Log the error message itself
       await this.teardown();
       throw error;
     }
@@ -263,8 +264,9 @@ export class StorageIntegrationTest {
    * Test case 1: Basic crawling with storage
    */
   private async testBasicCrawlWithStorage(): Promise<void> {
+    const logger = getLogger(); // Moved declaration here
     logger.info('Running basic crawl with storage test...', 'StorageIntegrationTest');
-    
+
     // Create crawler components
     const urlProcessor = new SimpleUrlProcessor({
       baseUrl: this.baseUrl,
@@ -272,10 +274,11 @@ export class StorageIntegrationTest {
       excludePatterns: [],
       includePatterns: [],
       sameDomainOnly: true
-    });
+    }); // Removed logger argument
     const contentExtractor = new SimpleContentExtractor();
-    
+
     // Create crawler with the adapter
+    // Logger declared above now
     const crawler = new SimpleCrawler(this.storageAdapter, {
       baseUrl: this.baseUrl,
       maxDepth: 2,
@@ -286,7 +289,7 @@ export class StorageIntegrationTest {
    // Wait 100ms between requests
       includePatterns: [],  // No specific include patterns
       excludePatterns: []   // No specific exclude patterns
-    });
+    }, logger); // Pass logger instance
     
     // Track document count before crawl
     const originalCount = await this.documentRepository.count();
@@ -298,15 +301,15 @@ export class StorageIntegrationTest {
 const documentIds: string[] = [];
     
     crawler.on('document', (eventData: any) => {
-      console.log(`Document event received: ${JSON.stringify(eventData)}`);
+      logger.debug(`Document event received: ${JSON.stringify(eventData)}`, 'StorageIntegrationTest');
       crawledUrls.push(eventData.url);
       
       // Store the document ID for later verification
       if (eventData.documentId) {
         documentIds.push(eventData.documentId);
-        console.log(`Added document ID: ${eventData.documentId} for URL: ${eventData.url}`);
+        logger.debug(`Added document ID: ${eventData.documentId} for URL: ${eventData.url}`, 'StorageIntegrationTest');
       } else {
-        console.warn(`Warning: No document ID for URL: ${eventData.url}`);
+        logger.warn(`Warning: No document ID for URL: ${eventData.url}`, 'StorageIntegrationTest');
       }
     });
     
@@ -325,12 +328,12 @@ const documentIds: string[] = [];
     );
     
     // Verify we can retrieve the documents
-    console.log(`Verifying ${documentIds.length} document IDs: ${documentIds.join(', ')}`);
+    logger.debug(`Verifying ${documentIds.length} document IDs: ${documentIds.join(', ')}`, 'StorageIntegrationTest');
     for (const docId of documentIds) {
-      console.log(`Looking up document with ID: ${docId}`);
+      logger.debug(`Looking up document with ID: ${docId}`, 'StorageIntegrationTest');
       const storedDoc = await this.documentRepository.findById(docId);
       assert.notStrictEqual(storedDoc, null, `Document with ID ${docId} not found in repository`);
-      console.log(`Found document with URL: ${storedDoc?.url}`);
+      logger.debug(`Found document with URL: ${storedDoc?.url}`, 'StorageIntegrationTest');
     }
     
     logger.info(`Successfully crawled and stored ${documentIds.length} documents`, 'StorageIntegrationTest');
@@ -463,5 +466,5 @@ const documentIds: string[] = [];
 const isMainModule = import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'));
 if (isMainModule) {
   const test = new StorageIntegrationTest();
-  test.runTests().catch(console.error);
+  test.runTests().catch(error => logger.error('Unhandled error running tests', 'StorageIntegrationTest', error));
 }

@@ -12,11 +12,14 @@ import http from 'http';
 import { URL } from 'url';
 import { fileURLToPath } from 'url';
 import { performance } from 'perf_hooks';
+import { Logger, getLogger } from '../../../shared/infrastructure/logging.js'; // Import logger
 
 // Import SimpleCrawler and related components
 import { SimpleCrawler } from '../SimpleCrawler.js';
 import { FileSystemDocumentRepository } from '../../../shared/infrastructure/repositories/FileSystemDocumentRepository.js';
 import { FileSystemDocumentSourceRepository } from '../../../shared/infrastructure/repositories/FileSystemDocumentSourceRepository.js';
+const logger = getLogger(); // Get logger instance at the top level
+
 
 // A simple document storage adapter for testing
 class TestDocumentStorage {
@@ -42,7 +45,7 @@ class TestDocumentStorage {
       try {
         await this.documentRepository.save(document);
       } catch (error) {
-        console.error(`Error saving document to repository: ${error}`);
+        logger.error(`Error saving document to repository: ${error}`, 'PerformanceTest');
       }
     }
     
@@ -109,7 +112,7 @@ class PerformanceTest {
     await fs.mkdir(this.testDataDir, { recursive: true });
     await fs.mkdir(path.join(this.testDataDir, 'documents'), { recursive: true });
     
-    console.log(`Test data directory: ${this.testDataDir}`);
+    logger.info(`Test data directory: ${this.testDataDir}`, 'PerformanceTest');
     
     // Initialize document repository for persistent storage tests
     const documentRepository = new FileSystemDocumentRepository(
@@ -127,7 +130,7 @@ class PerformanceTest {
    */
   async runTests() {
     try {
-      console.log('Starting performance tests for SimpleCrawler...');
+      logger.info('Starting performance tests for SimpleCrawler...', 'PerformanceTest');
       
       // Test 1: Small site (50 pages) with default settings
       await this.runTestWithConfig('Small site - default settings', 50, 2, 100);
@@ -152,7 +155,7 @@ class PerformanceTest {
       
       return true;
     } catch (error) {
-      console.error('Performance test failed:', error);
+      logger.error('Performance test failed:', 'PerformanceTest', error);
       throw error;
     } finally {
       // Clean up
@@ -170,8 +173,8 @@ class PerformanceTest {
     requestDelay: number,
     deepStructure: boolean = false
   ) {
-    console.log(`\nRunning test: ${testName}`);
-    console.log(`Pages: ${pageCount}, Concurrency: ${concurrency}, Delay: ${requestDelay}ms, Deep: ${deepStructure}`);
+    logger.info(`\nRunning test: ${testName}`, 'PerformanceTest');
+    logger.info(`Pages: ${pageCount}, Concurrency: ${concurrency}, Delay: ${requestDelay}ms, Deep: ${deepStructure}`, 'PerformanceTest');
     
     // Reset storage
     this.documentStorage.clear();
@@ -188,7 +191,7 @@ class PerformanceTest {
       requestDelay,
       includePatterns: [],
       excludePatterns: [],
-    });
+    }, logger); // Pass logger instance
     
     // Track memory before
     const memBefore = process.memoryUsage();
@@ -206,10 +209,10 @@ class PerformanceTest {
     const memAfter = process.memoryUsage();
     const memoryUsage = (memAfter.heapUsed - memBefore.heapUsed) / (1024 * 1024); // in MB
     
-    console.log(`Crawl completed in ${duration.toFixed(2)} seconds`);
-    console.log(`Discovered: ${result.discovered}, Crawled: ${result.succeeded}, Failed: ${result.failed}`);
-    console.log(`Speed: ${(result.succeeded / duration).toFixed(2)} pages/second`);
-    console.log(`Memory usage: ${memoryUsage.toFixed(2)} MB`);
+    logger.info(`Crawl completed in ${duration.toFixed(2)} seconds`, 'PerformanceTest');
+    logger.info(`Discovered: ${result.discovered}, Crawled: ${result.succeeded}, Failed: ${result.failed}`, 'PerformanceTest');
+    logger.info(`Speed: ${(result.succeeded / duration).toFixed(2)} pages/second`, 'PerformanceTest');
+    logger.info(`Memory usage: ${memoryUsage.toFixed(2)} MB`, 'PerformanceTest');
     
     // Store results
     this.testResults.push({
@@ -277,7 +280,7 @@ class PerformanceTest {
         }
         
         this.serverPort = address.port;
-        console.log(`Test server running at http://localhost:${this.serverPort}`);
+        logger.info(`Test server running at http://localhost:${this.serverPort}`, 'PerformanceTest');
         resolve();
       });
     });
@@ -449,7 +452,7 @@ function testApi${i}(param) {
       }
     }
     
-    console.log(`Generated ${pages.size} test pages`);
+    logger.info(`Generated ${pages.size} test pages`, 'PerformanceTest');
     return pages;
   }
   
@@ -457,19 +460,19 @@ function testApi${i}(param) {
    * Report test results
    */
   private reportResults() {
-    console.log('\n=== PERFORMANCE TEST RESULTS ===\n');
-    console.log('| Test Name | Pages | Duration (s) | Discovered | Crawled | Pages/sec | Max Depth | Memory (MB) | Concurrency | Delay (ms) |');
-    console.log('|-----------|-------|--------------|------------|---------|-----------|-----------|-------------|-------------|-----------|');
+    logger.info('\n=== PERFORMANCE TEST RESULTS ===\n', 'PerformanceTest');
+    logger.info('| Test Name | Pages | Duration (s) | Discovered | Crawled | Pages/sec | Max Depth | Memory (MB) | Concurrency | Delay (ms) |', 'PerformanceTest');
+    logger.info('|-----------|-------|--------------|------------|---------|-----------|-----------|-------------|-------------|-----------|', 'PerformanceTest');
     
     for (const result of this.testResults) {
-      console.log(`| ${result.name.padEnd(10)} | ${result.pagesGenerated.toString().padEnd(6)} | ${result.crawlDuration.toString().padEnd(12)} | ${result.pagesDiscovered.toString().padEnd(10)} | ${result.pagesCrawled.toString().padEnd(7)} | ${result.pagesPerSecond.toString().padEnd(9)} | ${result.maxDepthReached.toString().padEnd(9)} | ${result.memoryUsageMB.toString().padEnd(11)} | ${result.concurrency.toString().padEnd(11)} | ${result.requestDelay.toString().padEnd(10)} |`);
+      logger.info(`| ${result.name.padEnd(10)} | ${result.pagesGenerated.toString().padEnd(6)} | ${result.crawlDuration.toString().padEnd(12)} | ${result.pagesDiscovered.toString().padEnd(10)} | ${result.pagesCrawled.toString().padEnd(7)} | ${result.pagesPerSecond.toString().padEnd(9)} | ${result.maxDepthReached.toString().padEnd(9)} | ${result.memoryUsageMB.toString().padEnd(11)} | ${result.concurrency.toString().padEnd(11)} | ${result.requestDelay.toString().padEnd(10)} |`, 'PerformanceTest');
     }
     
-    console.log('\n=== ANALYSIS ===\n');
+    logger.info('\n=== ANALYSIS ===\n', 'PerformanceTest');
     
     // Calculate averages
     const avgPagesPerSecond = this.testResults.reduce((sum, result) => sum + result.pagesPerSecond, 0) / this.testResults.length;
-    console.log(`Average crawl speed: ${avgPagesPerSecond.toFixed(2)} pages/second`);
+    logger.info(`Average crawl speed: ${avgPagesPerSecond.toFixed(2)} pages/second`, 'PerformanceTest');
     
     // Find best concurrency setting
     const concurrencyGroups = new Map<number, TestResults[]>();
@@ -480,17 +483,17 @@ function testApi${i}(param) {
       concurrencyGroups.get(result.concurrency)?.push(result);
     }
     
-    console.log('\nPerformance by concurrency setting:');
+    logger.info('\nPerformance by concurrency setting:', 'PerformanceTest');
     for (const [concurrency, results] of concurrencyGroups.entries()) {
       const avgSpeed = results.reduce((sum, result) => sum + result.pagesPerSecond, 0) / results.length;
-      console.log(`Concurrency ${concurrency}: ${avgSpeed.toFixed(2)} pages/second`);
+      logger.info(`Concurrency ${concurrency}: ${avgSpeed.toFixed(2)} pages/second`, 'PerformanceTest');
     }
     
     // Analyze memory usage
     const avgMemory = this.testResults.reduce((sum, result) => sum + result.memoryUsageMB, 0) / this.testResults.length;
-    console.log(`\nAverage memory usage: ${avgMemory.toFixed(2)} MB`);
+    logger.info(`\nAverage memory usage: ${avgMemory.toFixed(2)} MB`, 'PerformanceTest');
     
-    console.log('\nRecommendations:');
+    logger.info('\nRecommendations:', 'PerformanceTest');
     // Find best overall configuration
     let bestConfig = this.testResults[0];
     for (const result of this.testResults) {
@@ -499,8 +502,8 @@ function testApi${i}(param) {
       }
     }
     
-    console.log(`Best performance configuration: Concurrency ${bestConfig.concurrency}, Delay ${bestConfig.requestDelay}ms`);
-    console.log(`(${bestConfig.pagesPerSecond} pages/second)`);
+    logger.info(`Best performance configuration: Concurrency ${bestConfig.concurrency}, Delay ${bestConfig.requestDelay}ms`, 'PerformanceTest');
+    logger.info(`(${bestConfig.pagesPerSecond} pages/second)`, 'PerformanceTest');
   }
   
   /**
@@ -526,9 +529,9 @@ function testApi${i}(param) {
     // Clean up test directory
     try {
       await fs.rm(this.testDataDir, { recursive: true, force: true });
-      console.log(`Test data directory removed: ${this.testDataDir}`);
+      logger.info(`Test data directory removed: ${this.testDataDir}`, 'PerformanceTest');
     } catch (error) {
-      console.error('Error cleaning up test directory:', error);
+      logger.error('Error cleaning up test directory:', 'PerformanceTest', error);
     }
   }
 }
@@ -542,14 +545,14 @@ async function main() {
     await test.runTests();
     process.exit(0);
   } catch (error) {
-    console.error('Performance test failed:', error);
+    logger.error('Performance test failed:', 'PerformanceTest', error);
     process.exit(1);
   }
 }
 
 // Run tests if script is executed directly
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main().catch(console.error);
+  main().catch(error => logger.error('Unhandled error running main', 'PerformanceTest', error));
 }
 
 export { PerformanceTest };

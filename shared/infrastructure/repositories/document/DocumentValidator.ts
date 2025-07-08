@@ -125,6 +125,7 @@ export class DocumentValidator {
    * @returns Validation result
    */
   static validateForStorage(document: Document): ValidationResult {
+    logger.debug(`[DocumentValidator] validateForStorage called with document: ${JSON.stringify(document, null, 2)}`, 'DocumentValidator');
     const baseResult = this.validate(document);
     
     // Additional storage-specific validations
@@ -154,6 +155,7 @@ export class DocumentValidator {
       }
     }
     
+    logger.debug(`[DocumentValidator] validateForStorage result: ${JSON.stringify(baseResult, null, 2)}`, 'DocumentValidator');
     return baseResult;
   }
   

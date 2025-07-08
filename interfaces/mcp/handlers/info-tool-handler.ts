@@ -6,17 +6,26 @@
 import { BaseToolHandler, ToolDefinition } from './base-tool-handler.js';
 import { McpToolResponse } from '../tool-types.js';
 import { ConfigService } from '../services/config-service.js';
+import { Logger, getLogger } from '../../../shared/infrastructure/logging.js'; // Import Logger
+import { McpHandlerError, ConfigurationError, isDocsiError } from '../../../shared/domain/errors.js'; // Import custom errors
 
 /**
  * Handler for the docsi-info tool
  */
 export class InfoToolHandler extends BaseToolHandler {
+  private logger: Logger; // Added logger property
+
   /**
    * Create a new info tool handler
    * @param configService Configuration service instance
+   * @param loggerInstance Optional logger instance
    */
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    loggerInstance?: Logger // Added optional logger parameter
+  ) {
     super();
+    this.logger = loggerInstance || getLogger(); // Use injected or global logger
   }
   
   /**
@@ -44,35 +53,66 @@ export class InfoToolHandler extends BaseToolHandler {
    */
   async handleToolCall(name: string, args: any): Promise<McpToolResponse> {
     if (name !== 'docsi-info') {
-      return this.createErrorResponse(`Unknown tool: ${name}`);
+      return this.createStructuredErrorResponse(new McpHandlerError(`Handler cannot process tool: ${name}`, name));
     }
     
-    // Get system information
-    const dataDir = this.configService.get('dataDir');
-    const version = this.configService.get('version');
-    const startTime = this.configService.get('startTime') || new Date().toISOString();
-    const docSources = this.configService.get('documentSources') || 0;
-    const docCount = this.configService.get('documentCount') || 0;
-    
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `
+    try {
+      this.logger.info('Handling docsi-info request', 'InfoToolHandler.handleToolCall');
+      // Get system information
+      const dataDir = this.configService.get('dataDir');
+      const version = this.configService.get('version');
+
+      let startTimeValue = this.configService.get('startTime');
+      let startTimeStr = 'N/A'; // Default value
+
+      if (startTimeValue) {
+        try {
+          // Attempt to create a Date object and format it
+          const dateObj = new Date(startTimeValue);
+          // Check if the date is valid before formatting
+          if (!isNaN(dateObj.getTime())) {
+             startTimeStr = dateObj.toISOString();
+          } else {
+             this.logger.warn(`Configured startTime '${startTimeValue}' is not a valid date representation.`, 'InfoToolHandler.handleToolCall');
+          }
+        } catch (timeError) {
+          this.logger.warn(`Error processing startTime '${startTimeValue}': ${timeError}`, 'InfoToolHandler.handleToolCall', timeError);
+        }
+      } else {
+         // If config didn't provide startTime, use current time as fallback
+         startTimeStr = new Date().toISOString();
+         this.logger.debug('No startTime found in config, using current time.', 'InfoToolHandler.handleToolCall');
+      }
+
+      const docSources = this.configService.get('documentSources') || 0;
+      const docCount = this.configService.get('documentCount') || 0;
+
+      const infoText = `
 DocSI Information:
 ------------------
-Version: ${version}
-Data Directory: ${dataDir}
-Running Since: ${startTime}
+Version: ${version || 'N/A'}
+Data Directory: ${dataDir || 'N/A'}
+Running Since: ${startTimeStr}
+Running Since: ${startTimeStr}
 Document Sources: ${docSources}
 Indexed Documents: ${docCount}
 Protocol: Model Context Protocol
 Transport: stdio
 Node Version: ${process.version}
 Platform: ${process.platform}
-          `.trim()
-        }
-      ]
-    };
+      `.trim();
+
+      this.logger.debug('Successfully retrieved info', 'InfoToolHandler.handleToolCall');
+      return this.createSuccessResponse(infoText);
+
+    } catch (error: unknown) {
+      const message = `Error retrieving DocSI info: ${error instanceof Error ? error.message : String(error)}`;
+      this.logger.error(message, 'InfoToolHandler.handleToolCall', error);
+      // Wrap config errors specifically if possible, otherwise use generic handler error
+      if (error instanceof ConfigurationError || (error instanceof Error && error.message.includes('config'))) {
+         return this.createStructuredErrorResponse(new ConfigurationError(message, { originalError: error }));
+      }
+      return this.createStructuredErrorResponse(new McpHandlerError(message, name, { originalError: error }));
+    }
   }
 }

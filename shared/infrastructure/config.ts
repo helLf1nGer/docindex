@@ -9,6 +9,7 @@ import path from 'path';
 import os from 'os';
 // We use import assertion for dotenv since it's a CommonJS module
 import dotenv from 'dotenv';
+import { getLogger } from './logging.js';
 
 // Load environment variables from .env file if present
 dotenv.config();
@@ -103,7 +104,7 @@ const HOME_DIR = os.homedir();
 // Default configuration
 const defaultConfig: DocSIConfig = {
   dataDir: process.env.DOCSI_DATA_DIR || path.join(HOME_DIR, '.docsi'),
-  logLevel: (process.env.DOCSI_LOG_LEVEL as any) || 'info',
+  logLevel: (process.env.DOCSI_LOG_LEVEL as any) || 'debug', // Changed default to debug
   maxConcurrentRequests: parseInt(process.env.DOCSI_MAX_CONCURRENT_REQUESTS || '5', 10),
   
   crawler: {
@@ -157,7 +158,8 @@ function loadConfigFromFile(filePath: string): Partial<DocSIConfig> {
       return JSON.parse(configData);
     }
   } catch (error) {
-    console.warn(`Failed to load configuration from ${filePath}:`, error);
+    const logger = getLogger();
+    logger.warn(`Failed to load configuration from ${filePath}:`, 'Config', error);
   }
   return {};
 }
@@ -166,7 +168,7 @@ function loadConfigFromFile(filePath: string): Partial<DocSIConfig> {
 let config = { ...defaultConfig };
 
 // Load from global config file
-const globalConfigPath = path.join(HOME_DIR, '.docsi', 'config.json');
+const globalConfigPath = path.join(config.dataDir, 'config.json'); // Use determined dataDir
 const globalConfig = loadConfigFromFile(globalConfigPath);
 config = { ...config, ...globalConfig };
 
@@ -191,7 +193,8 @@ export function ensureDirectories(): void {
   try {
     if (!fs.existsSync(config.dataDir)) {
       fs.mkdirSync(config.dataDir, { recursive: true });
-      console.info(`Created data directory: ${config.dataDir}`);
+      const logger = getLogger();
+      logger.info(`Created data directory: ${config.dataDir}`, 'Config');
     }
     
     const sourcesDir = path.join(config.dataDir, 'sources');
@@ -209,7 +212,8 @@ export function ensureDirectories(): void {
       fs.mkdirSync(logsDir, { recursive: true });
     }
   } catch (error) {
-    console.error('Failed to create necessary directories:', error);
+    const logger = getLogger();
+    logger.error('Failed to create necessary directories:', 'Config', error);
     throw error;
   }
 }

@@ -7,7 +7,7 @@
  */
 export interface DiscoverToolArgs {
   /** Action to perform (add, refresh, list) */
-  action: 'add' | 'refresh' | 'list';
+  action: 'add' | 'refresh' | 'list' | 'delete';
   
   /** URL of the documentation source (required for add action) */
   url?: string;
@@ -26,6 +26,9 @@ export interface DiscoverToolArgs {
   
   /** Force refresh existing content */
   force?: boolean;
+
+  /** Fetch method: "http" (default) or "browser" */
+  crawlMethod?: 'http' | 'browser';
 }
 
 /**
@@ -36,7 +39,7 @@ export interface SearchToolArgs {
   query: string;
   
   /** Type of search to perform */
-  type?: 'keyword' | 'semantic' | 'api';
+  type?: 'keyword' | 'semantic' | 'hybrid' | 'api';
   
   /** Limit search to specific sources */
   sources?: string[];
@@ -108,7 +111,22 @@ export interface McpContentItem {
 export interface McpToolResponse {
   /** Content items */
   content: McpContentItem[];
-  
+
   /** Whether the response is an error */
   isError?: boolean;
+
+  /** Optional error type or code (DEPRECATED in favor of errorDetails.type) */
+  errorType?: string;
+
+  /** Structured error details */
+  errorDetails?: {
+    /** The type/category of error (e.g., class name like 'SourceNotFoundError') */
+    type: string;
+    /** A specific code for the error (e.g., 'SOURCE_NOT_FOUND') */
+    code: string;
+    /** Optional detailed message (defaults to error.message) */
+    message?: string;
+    /** Optional additional structured details */
+    details?: Record<string, any>;
+  };
 }

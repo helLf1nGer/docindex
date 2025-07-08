@@ -41,10 +41,10 @@ export interface CrawlJobSettings {
   
   /** Optional page prioritization configuration */
   pagePrioritization?: {
-    /** 
-     * Crawl strategy (breadth-first, depth-first, or hybrid) 
+    /**
+     * Crawl strategy (breadth-first, depth-first, or hybrid)
      * - breadth: Prioritizes URLs at lower depths (width-first)
-     * - depth: Prioritizes following paths deeper (depth-first)  
+     * - depth: Prioritizes following paths deeper (depth-first)
      * - hybrid: Balanced approach with pattern prioritization (recommended)
      */
     strategy: 'breadth' | 'depth' | 'hybrid';
@@ -65,6 +65,9 @@ export interface CrawlJobSettings {
   
   /** Debug mode for verbose logging */
   debug?: boolean;
+
+  /** Fetch strategy: "http" (default) or "browser" */
+  strategy?: 'http' | 'browser' | 'simple'; // Added 'simple' strategy
 }
 
 /**
@@ -250,7 +253,7 @@ export class CrawlerService implements ICrawlerService {
     // Initialize components
     this.jobManager = new JobManager();
     this.contentProcessor = new ContentProcessor();
-    this.storageManager = new StorageManager(documentRepository);
+    this.storageManager = new StorageManager(documentRepository, {} as any, {} as any);
     this.urlProcessor = new UrlProcessor();
     this.crawlerEngine = new CrawlerEngine(
       httpClient,

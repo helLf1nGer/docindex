@@ -7,6 +7,8 @@
 
 import { URL } from 'url';
 import * as path from 'path';
+import { getLogger } from '../../shared/infrastructure/logging.js';
+const logger = getLogger();
 
 export interface UrlProcessorOptions {
   /** Base URL for resolving relative URLs */
@@ -96,34 +98,43 @@ export class SimpleUrlProcessor {
   shouldProcessUrl(url: string): boolean {
     try {
       const normalizedUrl = this.normalizeUrl(url);
-      if (!normalizedUrl) return false;
+      if (!normalizedUrl) {
+        logger.debug(`[UrlProcessor] Rejecting URL (normalize failed): ${url}`, 'SimpleUrlProcessor');
+        return false;
+      }
       
       const parsedUrl = new URL(normalizedUrl);
       
       // Check domain constraint
       if (this.sameDomainOnly && parsedUrl.hostname !== this.baseDomain) {
+        logger.debug(`[UrlProcessor] Rejecting URL (different domain): ${normalizedUrl}`, 'SimpleUrlProcessor');
         return false;
       }
       
       // Check file extension
       const extension = path.extname(parsedUrl.pathname).toLowerCase();
       if (this.excludeExtensions.includes(extension)) {
+        logger.debug(`[UrlProcessor] Rejecting URL (excluded extension: ${extension}): ${normalizedUrl}`, 'SimpleUrlProcessor');
         return false;
       }
       
       // Check exclude patterns
       if (this.excludePatterns.some(pattern => pattern.test(normalizedUrl))) {
+        logger.debug(`[UrlProcessor] Rejecting URL (exclude pattern): ${normalizedUrl}`, 'SimpleUrlProcessor');
         return false;
       }
       
       // Check include patterns - if specified, URL must match one
-      if (this.includePatterns.length > 0 && 
+      if (this.includePatterns.length > 0 &&
           !this.includePatterns.some(pattern => pattern.test(normalizedUrl))) {
+        logger.debug(`[UrlProcessor] Rejecting URL (does not match include patterns): ${normalizedUrl}`, 'SimpleUrlProcessor');
         return false;
       }
       
+      logger.debug(`[UrlProcessor] Accepting URL: ${normalizedUrl}`, 'SimpleUrlProcessor');
       return true;
     } catch (error) {
+      logger.debug(`[UrlProcessor] Rejecting URL (exception): ${url} | ${error}`, 'SimpleUrlProcessor');
       return false;
     }
   }

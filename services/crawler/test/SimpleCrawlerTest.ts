@@ -12,6 +12,8 @@ import * as http from 'http';
 import { URL } from 'url';
 import { SimpleCrawler, DocumentStorage } from '../SimpleCrawler.js';
 import { Document } from '../../../shared/domain/models/Document.js';
+import { Logger, getLogger } from '../../../shared/infrastructure/logging.js';
+const logger = getLogger(); // Move logger declaration to module scope
 
 /**
  * Mock document storage for testing
@@ -62,12 +64,12 @@ class MockDocumentStorage implements DocumentStorage {
 /**
  * Create a simple mock web server for testing crawling with multiple depths
  */
-function createMockServer(): http.Server {
+function createMockServer(logger: Logger): http.Server { // Pass logger instance
   return http.createServer((req, res) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = url.pathname;
     
-    console.log(`Mock server received request for: ${path}`);
+    logger.debug(`Mock server received request for: ${path}`, 'SimpleCrawlerTest');
     
     // Define different responses based on path
     if (path === '/' || path === '/index.html') {
@@ -224,19 +226,22 @@ function createMockServer(): http.Server {
  * Main test function
  */
 async function runTest() {
-  console.log('Starting SimpleCrawler test...');
+  const logger = getLogger(); // Get logger instance for runTest
+  logger.info('Starting SimpleCrawler test...', 'SimpleCrawlerTest');
   
   // Create mock server
-  const server = createMockServer();
+  const server = createMockServer(logger); // Pass logger to mock server
   const port = 9876;
   
   server.listen(port, () => {
-    console.log(`Mock server listening on port ${port}`);
+    logger.info(`Mock server listening on port ${port}`, 'SimpleCrawlerTest');
   });
   
   try {
     // Create storage
     const storage = new MockDocumentStorage();
+    const logger = getLogger(); // Get logger instance
+    // Removed duplicate logger declaration
     
     // Create crawler with max depth 3
     const crawler = new SimpleCrawler(storage, {
@@ -245,43 +250,43 @@ async function runTest() {
       maxPages: 20,
       requestDelay: 100,
       concurrency: 2
-    });
+    }, logger); // Pass logger instance
     
     // Track events
     crawler.on('start', (data) => {
-      console.log(`Crawler started with base URL: ${data.url}`);
-    });
+      logger.info(`Crawler started with base URL: ${data.url}`, 'SimpleCrawlerTest');
+    }); // Removed incorrect logger argument
     
     crawler.on('processing', (data) => {
-      console.log(`Processing: ${data.url} (depth: ${data.depth})`);
+      logger.debug(`Processing: ${data.url} (depth: ${data.depth})`, 'SimpleCrawlerTest');
     });
     
     crawler.on('document', (data) => {
-      console.log(`Document saved: ${data.url}`);
+      logger.debug(`Document saved: ${data.url}`, 'SimpleCrawlerTest');
     });
     
     crawler.on('complete', (status) => {
-      console.log(`Crawler completed. Processed: ${status.processed}, Succeeded: ${status.succeeded}`);
+      logger.info(`Crawler completed. Processed: ${status.processed}, Succeeded: ${status.succeeded}`, 'SimpleCrawlerTest');
     });
     
     // Start crawling
     const result = await crawler.start();
     
     // Verify results
-    console.log('\nCrawl Results:');
-    console.log(`- Pages processed: ${result.processed}`);
-    console.log(`- Pages succeeded: ${result.succeeded}`);
-    console.log(`- Pages failed: ${result.failed}`);
-    console.log(`- Pages skipped: ${result.skipped}`);
+    logger.info('\nCrawl Results:', 'SimpleCrawlerTest');
+    logger.info(`- Pages processed: ${result.processed}`, 'SimpleCrawlerTest');
+    logger.info(`- Pages succeeded: ${result.succeeded}`, 'SimpleCrawlerTest');
+    logger.info(`- Pages failed: ${result.failed}`, 'SimpleCrawlerTest');
+    logger.info(`- Pages skipped: ${result.skipped}`, 'SimpleCrawlerTest');
     
     // Check documents by depth
     const docsByDepth = storage.getDocumentsByDepth();
-    console.log('\nDocuments by depth:');
+    logger.info('\nDocuments by depth:', 'SimpleCrawlerTest');
     
     for (const [depth, docs] of docsByDepth.entries()) {
-      console.log(`- Depth ${depth}: ${docs.length} documents`);
+      logger.debug(`- Depth ${depth}: ${docs.length} documents`, 'SimpleCrawlerTest');
       for (const doc of docs) {
-        console.log(`  - ${doc.title} (${doc.url})`);
+        logger.debug(`  - ${doc.title} (${doc.url})`, 'SimpleCrawlerTest');
       }
     }
     
@@ -290,26 +295,26 @@ async function runTest() {
     const depth1 = docsByDepth.get(2)?.length || 0;
     const depth2 = docsByDepth.get(3)?.length || 0;
     
-    console.log('\nVerification:');
-    console.log(`- Depth 1 pages: ${depth0} (expected: 3)`);
-    console.log(`- Depth 2 pages: ${depth1} (expected: 5)`);
-    console.log(`- Depth 3 pages: ${depth2} (expected: 1)`);
-    
+    logger.info('\nVerification:', 'SimpleCrawlerTest');
+    logger.info(`- Depth 1 pages: ${depth0} (expected: 3)`, 'SimpleCrawlerTest');
+    logger.info(`- Depth 2 pages: ${depth1} (expected: 5)`, 'SimpleCrawlerTest');
+    logger.info(`- Depth 3 pages: ${depth2} (expected: 1)`, 'SimpleCrawlerTest');
+
     if (depth0 === 3 && depth1 === 5 && depth2 === 1) {
-      console.log('\n✅ TEST PASSED: Correct document count at each depth');
+      logger.info('\n✅ TEST PASSED: Correct document count at each depth', 'SimpleCrawlerTest');
     } else {
-      console.log('\n❌ TEST FAILED: Incorrect document count at one or more depths');
+      logger.error('\n❌ TEST FAILED: Incorrect document count at one or more depths', 'SimpleCrawlerTest');
     }
     
   } catch (error) {
-    console.error('Test error:', error);
+    logger.error('Test error:', 'SimpleCrawlerTest', error);
   } finally {
     // Close server
     server.close(() => {
-      console.log('Mock server closed');
+      logger.info('Mock server closed', 'SimpleCrawlerTest');
     });
   }
 }
 
 // Run the test
-runTest().catch(console.error);
+runTest().catch(error => logger.error('Unhandled error running test', 'SimpleCrawlerTest', error));

@@ -62,6 +62,9 @@ export class StorageManager {
    */
   constructor(
     private readonly documentRepository: IDocumentRepository
+,
+    private readonly embeddingService: import('../../../shared/infrastructure/EmbeddingService.js').EmbeddingService,
+    private readonly vectorRepository: import('../../../shared/domain/repositories/VectorRepository.js').VectorRepository
   ) {
     logger.debug('StorageManager initialized', 'StorageManager');
   }
@@ -107,6 +110,9 @@ export class StorageManager {
           updatedAt: new Date() // Update updatedAt
         };
         
+// Generate embedding and store vector
+const embeddingUpdate = await this.embeddingService.generateEmbedding(updatedDocument.textContent);
+await this.vectorRepository.upsertVector(updatedDocument.id, embeddingUpdate);
         // Save document
         await this.documentRepository.save(updatedDocument);
         logger.info(`Updated document: ${updatedDocument.title} (${updatedDocument.id})`, 'StorageManager');
@@ -123,6 +129,9 @@ export class StorageManager {
           updatedAt: new Date()
         };
         
+// Generate embedding and store vector
+const embeddingNew = await this.embeddingService.generateEmbedding(newDocument.textContent);
+await this.vectorRepository.upsertVector(newDocument.id, embeddingNew);
         // Save document
         await this.documentRepository.save(newDocument);
         logger.info(`Stored new document: ${newDocument.title} (${newDocument.id})`, 'StorageManager');

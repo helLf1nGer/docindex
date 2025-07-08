@@ -14,6 +14,7 @@ import { UrlProcessor } from '../domain/UrlProcessor.js';
 import { HttpClient } from '../../../shared/infrastructure/HttpClient.js';
 import { Document, DocumentSource } from '../../../shared/domain/models/Document.js';
 import { DocumentSearchQuery, IDocumentRepository } from '../../../shared/domain/repositories/DocumentRepository.js';
+import { getLogger } from '../../../shared/infrastructure/logging.js'; // Use getLogger
 
 // Mock document repository for testing
 class MockDocumentRepository implements IDocumentRepository {
@@ -21,6 +22,13 @@ class MockDocumentRepository implements IDocumentRepository {
   
   async findById(id: string): Promise<Document | null> {
     return this.documents.get(id) || null;
+  }
+
+  async findByIds(ids: string[]): Promise<Document[]> {
+    // Basic mock implementation: filter documents by ID
+    return ids
+      .map(id => this.documents.get(id))
+      .filter((doc): doc is Document => doc !== undefined);
   }
   
   async findByUrl(url: string): Promise<Document | null> {
@@ -62,16 +70,18 @@ class MockDocumentRepository implements IDocumentRepository {
   }
 }
 
+const logger = getLogger(); // Get logger instance at a higher scope
+
 // Set up test environment
 async function runTest(): Promise<void> {
-  console.log('Testing CrawlerEngine');
-  console.log('====================');
+  logger.info('Testing CrawlerEngine', 'CrawlerEngineTest');
+  logger.info('====================', 'CrawlerEngineTest');
   
   // Create components
   const documentRepository = new MockDocumentRepository();
   const httpClient = new HttpClient();
   const contentProcessor = new ContentProcessor();
-  const storageManager = new StorageManager(documentRepository);
+  const storageManager = new StorageManager(documentRepository, {} as any, {} as any);
   const urlProcessor = new UrlProcessor();
   
   // Create crawler engine
@@ -84,7 +94,7 @@ async function runTest(): Promise<void> {
   
   // Set up event listeners for crawler engine
   crawlerEngine.getEventEmitter().on('page-crawled', (event) => {
-    console.log(`Crawled: ${event.data.url}`);
+    logger.debug(`Crawled: ${event.data.url}`, 'CrawlerEngineTest');
   });
   
   // Define test source (MDN JavaScript documentation)
@@ -116,41 +126,41 @@ async function runTest(): Promise<void> {
     debug: true
   };
   
-  console.log(`Starting test crawl of ${source.name} (${source.baseUrl})`);
-  console.log(`Max depth: ${config.maxDepth}, Max pages: ${config.maxPages}`);
+  logger.info(`Starting test crawl of ${source.name} (${source.baseUrl})`, 'CrawlerEngineTest');
+  logger.info(`Max depth: ${config.maxDepth}, Max pages: ${config.maxPages}`, 'CrawlerEngineTest');
   
   try {
     // Run the crawler
     const result = await crawlerEngine.crawl(source, config);
     
-    console.log('\nCrawl complete!');
-    console.log(`Pages crawled: ${result.pagesCrawled}`);
-    console.log(`Pages discovered: ${result.pagesDiscovered}`);
-    console.log(`Max depth reached: ${result.maxDepthReached}`);
-    console.log(`Runtime: ${result.runtime}ms`);
+    logger.info('\nCrawl complete!', 'CrawlerEngineTest');
+    logger.info(`Pages crawled: ${result.pagesCrawled}`, 'CrawlerEngineTest');
+    logger.info(`Pages discovered: ${result.pagesDiscovered}`, 'CrawlerEngineTest');
+    logger.info(`Max depth reached: ${result.maxDepthReached}`, 'CrawlerEngineTest');
+    logger.info(`Runtime: ${result.runtime}ms`, 'CrawlerEngineTest');
     
     // Get all stored documents
     const documents = documentRepository.getAll();
-    console.log(`\nStored documents: ${documents.length}`);
+    logger.info(`\nStored documents: ${documents.length}`, 'CrawlerEngineTest');
     
     // Print document info
     documents.forEach((doc, index) => {
-      console.log(`\nDocument ${index + 1}:`);
-      console.log(`  Title: ${doc.title}`);
-      console.log(`  URL: ${doc.url}`);
-      console.log(`  Text content length: ${doc.textContent.length} chars`);
-      console.log(`  Tags: ${doc.tags.join(', ')}`);
+      logger.debug(`\nDocument ${index + 1}:`, 'CrawlerEngineTest');
+      logger.debug(`  Title: ${doc.title}`, 'CrawlerEngineTest');
+      logger.debug(`  URL: ${doc.url}`, 'CrawlerEngineTest');
+      logger.debug(`  Text content length: ${doc.textContent.length} chars`, 'CrawlerEngineTest');
+      logger.debug(`  Tags: ${doc.tags.join(', ')}`, 'CrawlerEngineTest');
     });
     
-    console.log('\nTest completed successfully!');
+    logger.info('\nTest completed successfully!', 'CrawlerEngineTest');
   } catch (error) {
-    console.error('Error during test:', error);
+    logger.error('Error during test:', 'CrawlerEngineTest', error); // Pass error as metadata
     process.exit(1);
   }
 }
 
 // Run the test
 runTest().catch(error => {
-  console.error('Fatal error:', error);
+  logger.error('Fatal error:', 'CrawlerEngineTest', error); // Use logger and pass error as metadata
   process.exit(1);
 });

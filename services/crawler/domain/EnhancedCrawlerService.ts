@@ -51,7 +51,7 @@ export class EnhancedCrawlerService implements ICrawlerService {
     // Initialize components
     this.jobManager = new JobManager();
     this.contentProcessor = new ContentProcessor();
-    this.storageManager = new StorageManager(documentRepository);
+    this.storageManager = new StorageManager(documentRepository, {} as any, {} as any);
     this.urlProcessor = new UrlProcessor();
     
     // Forward events from components to the crawler service event emitter

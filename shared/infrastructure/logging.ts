@@ -69,7 +69,7 @@ export class Logger {
       // Default configuration
       const defaultConfig: LoggerConfig = {
         logDir: path.join(config.dataDir, 'logs'),
-        minLevel: LogLevel.INFO,
+        minLevel: LogLevel.DEBUG, // Changed default level to DEBUG
         logFile: 'docsi.log',
         maxFileSize: 10 * 1024 * 1024, // 10MB
         maxFiles: 5
@@ -190,7 +190,8 @@ export class Logger {
   private async writeLog(level: LogLevel, message: string, context: string, metadata?: any): Promise<void> {
     // Check if we should log this level
     const logLevels = Object.values(LogLevel);
-    if (logLevels.indexOf(level) > logLevels.indexOf(this.config.minLevel)) {
+    // Corrected: Log if the message level index is <= the minLevel index (more severe or equal)
+    if (logLevels.indexOf(level) > logLevels.indexOf(this.config.minLevel)) { 
       return;
     }
     

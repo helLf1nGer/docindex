@@ -37,31 +37,31 @@ export interface DocumentRepositoryConfig {
  */
 export interface DocumentIndex {
   /** Clear the index */
-  clear(): void;
+  clear(): Promise<void>;
   
   /** Get file path by document ID */
-  getPathById(id: string): string | undefined;
+  getPathById(id: string): Promise<string | undefined>;
   
   /** Get file path by document URL */
-  getPathByUrl(url: string): string | undefined;
+  getPathByUrl(url: string): Promise<string | undefined>;
   
   /** Set path for document ID */
-  setPathForId(id: string, path: string): void;
+  setPathForId(id: string, path: string): Promise<void>;
   
   /** Set path for document URL */
-  setPathForUrl(url: string, path: string): void;
+  setPathForUrl(url: string, path: string): Promise<void>;
   
   /** Remove document ID from index */
-  removeId(id: string): void;
+  removeId(id: string): Promise<void>;
   
   /** Remove document URL from index */
-  removeUrl(url: string): void;
+  removeUrl(url: string): Promise<void>;
   
   /** Get size of the index */
-  get size(): number;
+  size(): Promise<number>; // Changed from getter to async method
   
   /** Get all document IDs */
-  getAllIds(): string[];
+  getAllIds(): Promise<string[]>;
 }
 
 /**
