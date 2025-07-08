@@ -54,3 +54,12 @@ services/scheduler/
 
 # Utility scripts
 shared/utils/
+
+# AI-generated planning and documentation files
+docsi_tree.md
+enhancement-plan.md
+SECURITY_CHECKLIST.md
+*-plan.md
+*-checklist.md
+*-todo.md
+*-notes.md
